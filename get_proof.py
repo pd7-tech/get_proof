@@ -2,7 +2,12 @@ import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
+from datetime import timedelta
+import shutil
+import subprocess
+import platform
 
 try:
     import pandas as pd
@@ -47,19 +52,50 @@ def extract_pdf_pages(pdf_path):
     return pages
 
 
-def find_account_pages(conta, pages):
-    """Busca conta nas páginas do PDF"""
+def find_account_pages(conta, nome, pages):
+    """Busca páginas onde TANTO a conta QUANTO o nome aparecem juntos"""
     found = []
     conta_norm = normalize_account(conta)
+    conta_original = str(conta).strip()
+    nome_upper = str(nome).upper().strip() if nome else ""
     
     if not conta_norm or len(conta_norm) < 3:
         return found
     
-    conta_sem_dv = conta_norm[:-1] if len(conta_norm) > 1 else conta_norm
+    if not nome_upper:
+        return found
     
+    # Para cada página, verifica se tem TANTO a conta QUANTO o nome
     for num, data in pages.items():
-        if conta_norm in data['numbers'] or conta_sem_dv in data['numbers'] or str(conta) in data['text']:
-            found.append(num)
+        text_upper = data['text'].upper()
+        tem_conta = False
+        tem_nome = False
+        
+        # Verifica se tem a conta (busca 1: com formatação)
+        if conta_original in data['text']:
+            tem_conta = True
+        # Busca 2: conta normalizada
+        elif conta_norm in data['numbers']:
+            tem_conta = True
+        # Busca 3: sem dígito verificador (último recurso)
+        elif len(conta_norm) > 4:
+            conta_sem_dv = conta_norm[:-1]
+            if len(conta_sem_dv) >= 4 and conta_sem_dv in data['numbers']:
+                tem_conta = True
+        
+        # Verifica se tem o nome (pode ser parcial para nomes compostos)
+        if nome_upper in text_upper:
+            tem_nome = True
+        else:
+            # Tenta verificar partes do nome (min 3 caracteres por parte)
+            partes_nome = [p for p in nome_upper.split() if len(p) >= 3]
+            if partes_nome and all(parte in text_upper for parte in partes_nome):
+                tem_nome = True
+        
+        # SÓ adiciona se encontrou AMBOS: conta E nome
+        if tem_conta and tem_nome:
+            if num not in found:
+                found.append(num)
     
     return found
 
@@ -69,21 +105,62 @@ def create_pdf(pdf_path, page_numbers, output_path):
     if not page_numbers:
         return False
     
+    reader = None
+    writer = None
+    
     try:
-        with open(pdf_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            writer = PyPDF2.PdfWriter()
-            
-            for num in page_numbers:
-                if num < len(reader.pages):
-                    writer.add_page(reader.pages[num])
-            
-            if writer.pages:
-                with open(output_path, 'wb') as out:
+        # Abrir o arquivo PDF fonte
+        reader = PyPDF2.PdfReader(pdf_path)
+        
+        # Criar um novo writer para cada arquivo
+        writer = PyPDF2.PdfWriter()
+        
+        # Adicionar apenas as páginas especificadas
+        for num in page_numbers:
+            if num < len(reader.pages):
+                page = reader.pages[num]
+                writer.add_page(page)
+        
+        # Verificar se há páginas e salvar
+        if len(writer.pages) > 0:
+            # Garantir que NÃO sobrescrevemos arquivos já existentes
+            target = output_path
+            if os.path.exists(target):
+                base, ext = os.path.splitext(target)
+                # tentar com sufixo timestamp
+                stamp = str(int(time.time() * 1000))
+                candidate = f"{base}_{stamp}{ext}"
+                # em casos raros de colisão, iterar
+                i = 1
+                while os.path.exists(candidate):
+                    candidate = f"{base}_{stamp}_{i}{ext}"
+                    i += 1
+                target = candidate
+
+            # escrever em arquivo temporário e mover para destino (atomicidade)
+            try:
+                import tempfile
+                dirpath = os.path.dirname(target) or '.'
+                fd, tmpname = tempfile.mkstemp(dir=dirpath, suffix='.pdf')
+                os.close(fd)
+                with open(tmpname, 'wb') as out:
                     writer.write(out)
-                return True
+                os.replace(tmpname, target)
+            except Exception:
+                # fallback simples
+                with open(target, 'wb') as out:
+                    writer.write(out)
+
+            return True
+            
     except Exception as e:
         print(f"Erro criar PDF: {e}")
+        return False
+    finally:
+        # Limpar referências
+        writer = None
+        reader = None
+    
     return False
 
 
@@ -116,152 +193,224 @@ def find_column(df, names):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("Extrator de Comprovantes")
-        self.root.geometry("800x600")
+        self.root.title("Extrator de Comprovantes PDF")
+        self.root.geometry("900x700")
+        self.root.minsize(800, 600)
         
-        self.pdf_var = tk.StringVar()
+        self.pdf_folder_var = tk.StringVar()
         self.excel_var = tk.StringVar()
         self.out_var = tk.StringVar(value="comprovantes_extraidos")
         self.df = None
         self.conta_col = None
         self.nome_col = None
         self.ccusto_col = None
-        self.last_dir = os.path.expanduser("~")  # Lembra último diretório
+        self.last_dir = os.path.expanduser("~")
+        
+        # Option to force reprocess (ignore history)
+        self.force_reprocess_var = tk.BooleanVar(value=False)
+        
+        # Timer
+        self.start_time = None
+        self.timer_running = False
+        self.timer_label = None
+        
+        # Histórico de PDFs processados
+        self.processed_pdfs_file = "pdfs_processados.json"
+        self.processed_pdfs = self.load_processed_pdfs()
         
         self.setup_ui()
     
+    def load_processed_pdfs(self):
+        """Carrega lista de PDFs já processados"""
+        try:
+            if os.path.exists(self.processed_pdfs_file):
+                import json
+                with open(self.processed_pdfs_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except:
+            pass
+        return {}
+    
+    def save_processed_pdfs(self):
+        """Salva lista de PDFs processados"""
+        try:
+            import json
+            with open(self.processed_pdfs_file, 'w', encoding='utf-8') as f:
+                json.dump(self.processed_pdfs, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Erro ao salvar histórico: {e}")
+    
+    def get_pdf_fingerprint(self, pdf_path):
+        """Gera identificador único para PDF (nome + tamanho + data modificação)"""
+        try:
+            stat = os.stat(pdf_path)
+            return f"{os.path.basename(pdf_path)}_{stat.st_size}_{stat.st_mtime}"
+        except:
+            return None
+    
     def setup_ui(self):
-        main = ttk.Frame(self.root, padding=10)
+        # Apply a clean ttk style
+        try:
+            style = ttk.Style(self.root)
+            # Prefer a neutral theme if available
+            for t in ("clam", "alt", "default"):
+                try:
+                    style.theme_use(t)
+                    break
+                except Exception:
+                    pass
+            style.configure('TLabel', font=('Segoe UI', 10))
+            style.configure('TButton', font=('Segoe UI', 10))
+            style.configure('Header.TLabel', font=('Segoe UI', 16, 'bold'))
+            style.configure('Accent.TButton', font=('Segoe UI', 11, 'bold'), foreground='#ffffff', background='#0078D7')
+            style.map('Accent.TButton', background=[('active', '#005A9E')])
+        except Exception:
+            # ignore style errors on restricted environments
+            pass
+
+        # Main container
+        main = ttk.Frame(self.root, padding=(12, 12))
         main.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(main, text="Extrator de Comprovantes", font=('Arial', 16, 'bold')).pack(pady=15)
-        
-        # Arquivos
-        files = ttk.LabelFrame(main, text="📁 Arquivos", padding=15)
-        files.pack(fill=tk.X, pady=5)
-        
-        # PDF
-        f1 = ttk.Frame(files)
-        f1.pack(fill=tk.X, pady=5)
-        ttk.Label(f1, text="PDF Comprovantes:", width=18, font=('Arial', 10)).pack(side=tk.LEFT)
-        pdf_entry = ttk.Entry(f1, textvariable=self.pdf_var, font=('Arial', 9))
-        pdf_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        pdf_entry.bind('<Return>', lambda e: self.validate_pdf())
-        ttk.Button(f1, text="Procurar...", width=12, command=self.get_pdf).pack(side=tk.LEFT)
-        
-        # Excel
-        f2 = ttk.Frame(files)
-        f2.pack(fill=tk.X, pady=5)
-        ttk.Label(f2, text="Planilha Excel:", width=18, font=('Arial', 10)).pack(side=tk.LEFT)
-        excel_entry = ttk.Entry(f2, textvariable=self.excel_var, font=('Arial', 9))
-        excel_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Header
+        header = ttk.Label(main, text="Extrator de Comprovantes", style='Header.TLabel')
+        header.pack(pady=(6, 12))
+
+        # Files group (grid layout for neat alignment)
+        files = ttk.LabelFrame(main, text="📁 Arquivos", padding=12)
+        files.pack(fill=tk.X, pady=6)
+
+        # Layout: label | entry | button
+        files.columnconfigure(1, weight=1)
+
+        ttk.Label(files, text="Pasta PDFs:").grid(row=0, column=0, sticky=tk.W, padx=(4, 8), pady=6)
+        pdf_entry = ttk.Entry(files, textvariable=self.pdf_folder_var)
+        pdf_entry.grid(row=0, column=1, sticky='ew', padx=(0, 8), pady=6)
+        pdf_entry.bind('<Return>', lambda e: self.validate_pdf_folder())
+        ttk.Button(files, text="Procurar...", width=14, command=self.get_pdf_folder).grid(row=0, column=2, padx=(0,4), pady=6)
+
+        ttk.Label(files, text="Planilha Excel:").grid(row=1, column=0, sticky=tk.W, padx=(4, 8), pady=6)
+        excel_entry = ttk.Entry(files, textvariable=self.excel_var)
+        excel_entry.grid(row=1, column=1, sticky='ew', padx=(0, 8), pady=6)
         excel_entry.bind('<Return>', lambda e: self.validate_excel())
-        ttk.Button(f2, text="Procurar...", width=12, command=self.get_excel).pack(side=tk.LEFT)
-        
-        # Saída
-        f3 = ttk.Frame(files)
-        f3.pack(fill=tk.X, pady=5)
-        ttk.Label(f3, text="Pasta de Saída:", width=18, font=('Arial', 10)).pack(side=tk.LEFT)
-        out_entry = ttk.Entry(f3, textvariable=self.out_var, font=('Arial', 9))
-        out_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Button(files, text="Procurar...", width=14, command=self.get_excel).grid(row=1, column=2, padx=(0,4), pady=6)
+
+        ttk.Label(files, text="Pasta de Saída:").grid(row=2, column=0, sticky=tk.W, padx=(4, 8), pady=6)
+        out_entry = ttk.Entry(files, textvariable=self.out_var)
+        out_entry.grid(row=2, column=1, sticky='ew', padx=(0, 8), pady=6)
         out_entry.bind('<Return>', lambda e: self.validate_out())
-        ttk.Button(f3, text="Procurar...", width=12, command=self.get_out).pack(side=tk.LEFT)
+        ttk.Button(files, text="Procurar...", width=14, command=self.get_out).grid(row=2, column=2, padx=(0,4), pady=6)
+
+        # Status / timer row
+        status_row = ttk.Frame(main)
+        status_row.pack(fill=tk.X, pady=(10,4))
+        self.timer_label = ttk.Label(status_row, text="⏱️ Tempo: 00:00:00.000")
+        self.timer_label.pack(side=tk.LEFT)
+
+        # Options frame for reprocess controls
+        options_frame = ttk.LabelFrame(main, text="⚙️ Opções de Processamento", padding=8)
+        options_frame.pack(fill=tk.X, pady=(6,4))
         
-        # Botão
-        btn_frame = ttk.Frame(main)
-        btn_frame.pack(pady=15)
-        self.btn = ttk.Button(btn_frame, text="▶ PROCESSAR COMPROVANTES", command=self.start, width=30)
-        self.btn.pack()
-        
-        self.prog = ttk.Progressbar(main, mode='indeterminate', length=400)
-        self.prog.pack(fill=tk.X, pady=5)
-        
-        # Log
-        logf = ttk.LabelFrame(main, text="📋 Log de Processamento", padding=5)
-        logf.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.log = scrolledtext.ScrolledText(logf, height=12, state='disabled', font=('Courier', 9))
+        try:
+            chk = ttk.Checkbutton(options_frame, text="Ignorar histórico (forçar reprocessamento de todos os PDFs)", 
+                                 variable=self.force_reprocess_var)
+            chk.pack(side=tk.LEFT, padx=(4,12))
+            ttk.Button(options_frame, text="🗑️ Limpar Histórico", 
+                      command=self.clear_processed_history, width=18).pack(side=tk.LEFT, padx=(0,4))
+        except Exception:
+            # ignore if style/ttk not available
+            pass
+
+        # Process button and progress
+        controls = ttk.Frame(main)
+        controls.pack(fill=tk.X, pady=(10,4))
+        # Accent styled button (fall back to default if style not available)
+        try:
+            self.btn = ttk.Button(controls, text="▶ PROCESSAR COMPROVANTES", command=self.start, style='Accent.TButton')
+        except Exception:
+            self.btn = ttk.Button(controls, text="▶ PROCESSAR COMPROVANTES", command=self.start)
+        self.btn.pack(side=tk.LEFT, padx=(0,10))
+
+        self.prog = ttk.Progressbar(controls, mode='indeterminate', length=400)
+        self.prog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,10))
+
+        # Status label to the right
+        self.status_var = tk.StringVar(value="Pronto")
+        status_label = ttk.Label(controls, textvariable=self.status_var, font=('Segoe UI', 9, 'italic'))
+        status_label.pack(side=tk.LEFT)
+
+        # Log area
+        logf = ttk.LabelFrame(main, text="📋 Log de Processamento", padding=8)
+        logf.pack(fill=tk.BOTH, expand=True, pady=(10,0))
+        self.log = scrolledtext.ScrolledText(logf, height=12, state='disabled', font=('Courier New', 10))
         self.log.pack(fill=tk.BOTH, expand=True)
     
-    def get_pdf(self):
+    def update_timer(self):
+        """Atualiza o cronômetro a cada 100ms"""
+        if self.timer_running and self.start_time:
+            elapsed = time.time() - self.start_time
+            hours, remainder = divmod(int(elapsed), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            milliseconds = int((elapsed % 1) * 1000)
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+            self.timer_label.config(text=f"⏱️ Tempo: {time_str}")
+            self.root.after(100, self.update_timer)
+    
+    def start_timer(self):
+        """Inicia o cronômetro"""
+        self.start_time = time.time()
+        self.timer_running = True
+        self.timer_label.config(text="⏱️ Tempo: 00:00:00.000")
+        self.update_timer()
+    
+    def stop_timer(self):
+        """Para o cronômetro e retorna tempo decorrido"""
+        self.timer_running = False
+        if self.start_time:
+            elapsed = time.time() - self.start_time
+            return elapsed
+        return 0
+    
+    def format_time(self, seconds):
+        """Formata segundos para formato legível com milissegundos"""
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
+        milliseconds = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
+    
+    def get_pdf_folder(self):
+        """Seleciona pasta usando explorador nativo do SO"""
         try:
-            # Tenta usar zenity (GTK file chooser) se disponível
-            import subprocess
-            try:
-                result = subprocess.run(
-                    ['zenity', '--file-selection', '--title=Selecionar PDF de Comprovantes', '--file-filter=Arquivos PDF | *.pdf'],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0:
-                    f = result.stdout.strip()
-                    if f and os.path.exists(f):
-                        self.pdf_var.set(f)
-                        self.last_dir = os.path.dirname(f)
-                        self.write_log(f"✓ PDF: {os.path.basename(f)}")
-                        return
-            except:
-                pass
-            
-            # Fallback para tkinter
-            init_dir = self.last_dir if hasattr(self, 'last_dir') and os.path.exists(self.last_dir) else os.path.expanduser("~/Downloads")
-            
-            f = filedialog.askopenfilename(
-                parent=self.root,
-                title="Selecionar PDF de Comprovantes",
-                filetypes=[
-                    ("Arquivos PDF", "*.pdf"),
-                    ("Todos os arquivos", "*.*")
-                ],
-                initialdir=init_dir
-            )
-            if f:
-                self.pdf_var.set(f)
-                self.last_dir = os.path.dirname(f)
-                self.write_log(f"✓ PDF: {os.path.basename(f)}")
+            folder = self._native_select_folder("Selecionar Pasta com PDFs de Comprovantes")
+            if folder:
+                self.pdf_folder_var.set(folder)
+                self.last_dir = folder
+                try:
+                    pdf_count = len([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
+                except Exception:
+                    pdf_count = 0
+                self.write_log(f"✓ Pasta PDFs: {os.path.basename(folder)} ({pdf_count} PDFs)")
+            else:
+                self.write_log("ℹ️ Seleção de pasta cancelada pelo usuário.")
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao selecionar PDF: {e}")
+            messagebox.showerror("Erro", f"Erro ao selecionar pasta: {e}")
     
     def get_excel(self):
+        """Seleciona arquivo Excel usando explorador nativo do SO"""
         try:
-            # Tenta usar zenity primeiro
-            import subprocess
-            try:
-                result = subprocess.run(
-                    ['zenity', '--file-selection', '--title=Selecionar Planilha Excel', '--file-filter=Arquivos Excel | *.xlsx *.xls'],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0:
-                    f = result.stdout.strip()
-                    if f and os.path.exists(f):
-                        self.excel_var.set(f)
-                        self.last_dir = os.path.dirname(f)
-                        self.write_log(f"✓ Excel: {os.path.basename(f)}")
-                        self.load_excel(f)
-                        return
-            except:
-                pass
-            
-            # Fallback para tkinter
-            init_dir = self.last_dir if hasattr(self, 'last_dir') and os.path.exists(self.last_dir) else os.path.expanduser("~/Downloads")
-            
-            f = filedialog.askopenfilename(
-                parent=self.root,
-                title="Selecionar Planilha Excel",
-                filetypes=[
-                    ("Arquivos Excel", "*.xlsx"),
-                    ("Arquivos Excel antigo", "*.xls"),
-                    ("Todos os arquivos", "*.*")
-                ],
-                initialdir=init_dir
-            )
-            if f:
-                self.excel_var.set(f)
-                self.last_dir = os.path.dirname(f)
-                self.write_log(f"✓ Excel: {os.path.basename(f)}")
-                self.load_excel(f)
+            arquivo = self._native_select_file("Selecionar Planilha Excel", 
+                                               [("Arquivos Excel", "*.xlsx *.xls"), ("Todos os arquivos", "*.*")])
+            if arquivo:
+                if os.path.isfile(arquivo):
+                    self.excel_var.set(arquivo)
+                    self.last_dir = os.path.dirname(arquivo)
+                    self.write_log(f"✓ Excel: {os.path.basename(arquivo)}")
+                    self.load_excel(arquivo)
+                else:
+                    self.write_log("⚠️ Arquivo selecionado não existe.")
+                    messagebox.showwarning("Arquivo inválido", "O arquivo selecionado não existe.")
+            else:
+                self.write_log("ℹ️ Seleção de arquivo cancelada pelo usuário.")
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao selecionar Excel: {e}")
     
@@ -281,50 +430,243 @@ class App:
             self.write_log(f"Erro: {e}")
     
     def get_out(self):
+        """Seleciona pasta de saída usando explorador nativo do SO"""
         try:
-            # Tenta usar zenity primeiro
-            import subprocess
+            folder = self._native_select_folder("Selecionar Pasta de Saída")
+            if folder:
+                self.out_var.set(folder)
+                self.last_dir = folder
+                self.write_log(f"✓ Pasta de saída: {folder}")
+            else:
+                self.write_log("ℹ️ Seleção de pasta de saída cancelada pelo usuário.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao selecionar pasta: {e}")
+    
+    def _native_select_folder(self, title):
+        """Seleciona pasta usando o explorador nativo do sistema operacional"""
+        sistema = platform.system()
+        
+        # Linux - tentar zenity, kdialog, ou yad
+        if sistema == "Linux":
+            # Tentar zenity primeiro (GNOME)
+            if shutil.which('zenity'):
+                try:
+                    result = subprocess.run(
+                        ['zenity', '--file-selection', '--directory', f'--title={title}', f'--filename={self.last_dir}/'],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar zenity: {e}")
+            
+            # Tentar kdialog (KDE)
+            if shutil.which('kdialog'):
+                try:
+                    result = subprocess.run(
+                        ['kdialog', '--getexistingdirectory', self.last_dir, '--title', title],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
+            
+            # Tentar yad
+            if shutil.which('yad'):
+                try:
+                    result = subprocess.run(
+                        ['yad', '--file-selection', '--directory', f'--title={title}', f'--filename={self.last_dir}/'],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar yad: {e}")
+        
+        # Windows - usar powershell com FolderBrowserDialog
+        elif sistema == "Windows":
             try:
+                script = f'''
+Add-Type -AssemblyName System.Windows.Forms
+$folder = New-Object System.Windows.Forms.FolderBrowserDialog
+$folder.Description = "{title}"
+$folder.SelectedPath = "{self.last_dir.replace('/', '\\\\')}"
+$folder.ShowNewFolderButton = $true
+if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+    Write-Output $folder.SelectedPath
+}}
+'''
                 result = subprocess.run(
-                    ['zenity', '--file-selection', '--directory', '--title=Selecionar Pasta de Saída'],
+                    ['powershell', '-NoProfile', '-Command', script],
                     capture_output=True,
                     text=True,
                     timeout=300
                 )
-                if result.returncode == 0:
-                    d = result.stdout.strip()
-                    if d:
-                        self.out_var.set(d)
-                        self.last_dir = d
-                        self.write_log(f"✓ Pasta: {d}")
-                        return
-            except:
-                pass
-            
-            # Fallback para tkinter
-            init_dir = self.last_dir if hasattr(self, 'last_dir') and os.path.exists(self.last_dir) else os.path.expanduser("~")
-            
-            d = filedialog.askdirectory(
-                parent=self.root,
-                title="Selecionar Pasta de Saída",
-                initialdir=init_dir,
-                mustexist=False
-            )
-            if d:
-                self.out_var.set(d)
-                self.last_dir = d
-                self.write_log(f"✓ Pasta: {d}")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao selecionar pasta: {e}")
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
+        
+        # macOS - usar osascript
+        elif sistema == "Darwin":
+            try:
+                script = f'choose folder with prompt "{title}" default location (POSIX file "{self.last_dir}")'
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    # Converter formato macOS para POSIX
+                    mac_path = result.stdout.strip()
+                    if mac_path.startswith('alias '):
+                        mac_path = mac_path[6:]
+                    return mac_path.replace(':', '/')
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
+        
+        # Fallback para tkinter (pode não ser nativo mas funciona em todos os SOs)
+        self.write_log("ℹ️ Usando diálogo tkinter (explorador nativo não disponível)")
+        return filedialog.askdirectory(initialdir=self.last_dir, title=title)
     
-    def validate_pdf(self):
-        """Valida caminho do PDF digitado"""
-        path = self.pdf_var.get().strip()
-        if path and os.path.exists(path) and path.endswith('.pdf'):
-            self.last_dir = os.path.dirname(path)
-            self.write_log(f"✓ PDF: {os.path.basename(path)}")
+    def _native_select_file(self, title, filetypes):
+        """Seleciona arquivo usando o explorador nativo do sistema operacional"""
+        sistema = platform.system()
+        
+        # Linux - tentar zenity, kdialog, ou yad
+        if sistema == "Linux":
+            # Construir filtro para zenity
+            filter_args = []
+            for name, pattern in filetypes:
+                if pattern != "*.*":
+                    filter_args.extend(['--file-filter', f'{name} | {pattern}'])
+            
+            # Tentar zenity primeiro (GNOME)
+            if shutil.which('zenity'):
+                try:
+                    cmd = ['zenity', '--file-selection', f'--title={title}', f'--filename={self.last_dir}/'] + filter_args
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar zenity: {e}")
+            
+            # Tentar kdialog (KDE)
+            if shutil.which('kdialog'):
+                try:
+                    # Construir filtro para kdialog
+                    filter_str = " ".join([pattern for _, pattern in filetypes if pattern != "*.*"])
+                    result = subprocess.run(
+                        ['kdialog', '--getopenfilename', self.last_dir, filter_str, '--title', title],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
+            
+            # Tentar yad
+            if shutil.which('yad'):
+                try:
+                    cmd = ['yad', '--file-selection', f'--title={title}', f'--filename={self.last_dir}/'] + filter_args
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return result.stdout.strip()
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao usar yad: {e}")
+        
+        # Windows - usar powershell com OpenFileDialog
+        elif sistema == "Windows":
+            try:
+                # Construir filtro de tipos
+                filter_parts = []
+                for name, pattern in filetypes:
+                    if pattern != "*.*":
+                        filter_parts.append(f"{name}|{pattern}")
+                filter_str = "|".join(filter_parts) if filter_parts else "Todos os arquivos|*.*"
+                
+                script = f'''
+Add-Type -AssemblyName System.Windows.Forms
+$file = New-Object System.Windows.Forms.OpenFileDialog
+$file.Title = "{title}"
+$file.InitialDirectory = "{self.last_dir.replace('/', '\\\\')}"
+$file.Filter = "{filter_str}"
+if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
+    Write-Output $file.FileName
+}}
+'''
+                result = subprocess.run(
+                    ['powershell', '-NoProfile', '-Command', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
+        
+        # macOS - usar osascript
+        elif sistema == "Darwin":
+            try:
+                # Construir filtro de tipos para macOS
+                extensions = []
+                for _, pattern in filetypes:
+                    if pattern != "*.*":
+                        exts = pattern.replace("*.", "").split()
+                        extensions.extend([f'"{ext}"' for ext in exts])
+                
+                type_filter = f" of type {{{','.join(extensions)}}}" if extensions else ""
+                script = f'choose file with prompt "{title}"{type_filter} default location (POSIX file "{self.last_dir}")'
+                
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    # Converter formato macOS para POSIX
+                    mac_path = result.stdout.strip()
+                    if mac_path.startswith('alias '):
+                        mac_path = mac_path[6:]
+                    return mac_path.replace(':', '/')
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
+        
+        # Fallback para tkinter
+        self.write_log("ℹ️ Usando diálogo tkinter (explorador nativo não disponível)")
+        return filedialog.askopenfilename(initialdir=self.last_dir, title=title, filetypes=filetypes)
+    
+    def validate_pdf_folder(self):
+        """Valida caminho da pasta de PDFs digitada"""
+        path = self.pdf_folder_var.get().strip()
+        if path and os.path.exists(path) and os.path.isdir(path):
+            self.last_dir = path
+            pdf_count = len([f for f in os.listdir(path) if f.lower().endswith('.pdf')])
+            self.write_log(f"✓ Pasta PDFs: {os.path.basename(path)} ({pdf_count} PDFs)")
         elif path:
-            messagebox.showwarning("Aviso", "Arquivo PDF não encontrado!")
+            messagebox.showwarning("Aviso", "Pasta não encontrada!")
     
     def validate_excel(self):
         """Valida caminho do Excel digitado"""
@@ -348,10 +690,25 @@ class App:
         self.log.see(tk.END)
         self.log.config(state='disabled')
         self.root.update()
+
+    def clear_processed_history(self):
+        """Apaga o histórico de PDFs processados (arquivo e memória)"""
+        try:
+            if messagebox.askyesno("Confirmar", "Tem certeza que deseja limpar o histórico de PDFs processados?"):
+                self.processed_pdfs = {}
+                try:
+                    if os.path.exists(self.processed_pdfs_file):
+                        os.remove(self.processed_pdfs_file)
+                except Exception as e:
+                    self.write_log(f"Erro ao limpar histórico: {e}")
+                else:
+                    self.write_log("✓ Histórico de PDFs processados limpo.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao limpar histórico: {e}")
     
     def start(self):
-        if not self.pdf_var.get() or not self.excel_var.get():
-            messagebox.showerror("Erro", "Selecione PDF e Excel!")
+        if not self.pdf_folder_var.get() or not self.excel_var.get():
+            messagebox.showerror("Erro", "Selecione a pasta de PDFs e o Excel!")
             return
         if self.df is None:
             messagebox.showerror("Erro", "Carregue Excel!")
@@ -361,12 +718,14 @@ class App:
             return
         
         self.btn.config(state='disabled')
+        self.status_var.set("Processando...")
         self.prog.start()
+        self.start_timer()
         threading.Thread(target=self.process, daemon=True).start()
     
     def process(self):
         try:
-            pdf_path = self.pdf_var.get()
+            pdf_folder = self.pdf_folder_var.get()
             out_dir = self.out_var.get()
             conta_col = self.conta_col
             nome_col = self.nome_col
@@ -375,51 +734,155 @@ class App:
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             
             self.write_log("\n" + "="*50)
-            self.write_log("Extraindo PDF...")
-            pages = extract_pdf_pages(pdf_path)
-            self.write_log(f"Total páginas: {len(pages)}")
+            self.write_log("🚀 Iniciando processamento...")
+            self.write_log("="*50)
             
-            self.write_log("\nBuscando comprovantes...")
-            ok = 0
-            nok = 0
+            # Listar todos os PDFs na pasta
+            pdf_files = [f for f in os.listdir(pdf_folder) if f.lower().endswith('.pdf')]
+            pdf_files.sort()
             
-            for _, row in self.df.iterrows():
-                conta = row[conta_col]
-                nome = row[nome_col]
-                ccusto = row[ccusto_col]
-                
-                if pd.isna(conta) or str(conta).strip() == '':
-                    continue
-                
-                conta_str = str(conta).strip()
-                nome_str = clean_filename(nome)
-                ccusto_str = clean_filename(ccusto)
-                
-                paginas = find_account_pages(conta_str, pages)
-                
-                if paginas:
-                    out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}.pdf")
-                    i = 1
-                    while os.path.exists(out):
-                        out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_{i}.pdf")
-                        i += 1
-                    
-                    if create_pdf(pdf_path, paginas, out):
-                        self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
-                        ok += 1
-                    else:
-                        nok += 1
+            if not pdf_files:
+                self.write_log("\n⚠️ Nenhum PDF encontrado na pasta!")
+                return
+            
+            self.write_log(f"\n� Total de PDFs na pasta: {len(pdf_files)}")
+            
+            # Separar PDFs novos e já processados (ou forçar reprocessamento)
+            novos_pdfs = []
+            ja_processados = []
+            force = getattr(self, 'force_reprocess_var', None) and self.force_reprocess_var.get()
+            if force:
+                self.write_log("⚠️ Modo FORÇAR reprocessamento ativo: ignorando histórico e reprocessando todos os PDFs.")
+
+            for pdf_name in pdf_files:
+                pdf_path = os.path.join(pdf_folder, pdf_name)
+                fingerprint = self.get_pdf_fingerprint(pdf_path)
+
+                if (not force) and fingerprint and fingerprint in self.processed_pdfs:
+                    ja_processados.append(pdf_name)
                 else:
-                    self.write_log(f"- {ccusto_str}_{nome_str} [{conta_str}]: não encontrado")
-                    nok += 1
+                    novos_pdfs.append((pdf_name, pdf_path, fingerprint))
+            
+            if ja_processados:
+                self.write_log(f"⏭️ PDFs já processados anteriormente: {len(ja_processados)}")
+            
+            if not novos_pdfs:
+                self.write_log("\n✓ Todos os PDFs já foram processados!")
+                elapsed = self.stop_timer()
+                time_str = self.format_time(elapsed)
+                self.write_log(f"⏱️ Tempo total: {time_str}")
+                self.root.after(0, lambda: self.status_var.set("Concluído - Nenhum PDF novo"))
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Processamento Concluído", 
+                    f"Todos os {len(pdf_files)} PDFs já foram processados anteriormente!"
+                ))
+                return
+            
+            self.write_log(f"🆕 PDFs novos para processar: {len(novos_pdfs)}")
+            self.root.after(0, lambda: self.status_var.set(f"Processando {len(novos_pdfs)} PDFs..."))
+            
+            # Processamento dos PDFs novos
+            total_ok = 0
+            total_nok = 0
+            total_duplicates = 0
+            nao_encontrados = []
+            
+            for idx, (pdf_name, pdf_path, fingerprint) in enumerate(novos_pdfs, 1):
+                self.write_log(f"\n{'='*50}")
+                self.write_log(f"📄 Processando PDF {idx}/{len(novos_pdfs)}: {pdf_name}")
+                self.write_log(f"{'='*50}")
+                self.root.after(0, lambda i=idx, t=len(novos_pdfs): self.status_var.set(f"PDF {i}/{t}..."))
+                
+                try:
+                    pages = extract_pdf_pages(pdf_path)
+                    self.write_log(f"✓ Páginas extraídas: {len(pages)}")
+                    
+                    ok = 0
+                    nok = 0
+                    duplicates = 0
+                    
+                    for row_idx, row in self.df.iterrows():
+                        conta = row[conta_col]
+                        nome = row[nome_col]
+                        ccusto = row[ccusto_col]
+                        
+                        # Verificar se dados estão presentes
+                        if pd.isna(conta) or str(conta).strip() == '':
+                            continue
+                        
+                        conta_str = str(conta).strip()
+                        nome_str = clean_filename(nome)
+                        ccusto_str = clean_filename(ccusto)
+                        
+                        paginas = find_account_pages(conta_str, nome, pages)
+                        
+                        if paginas:
+                            if len(paginas) > 1:
+                                duplicates += 1
+                                self.write_log(f"⚠️ Conta {conta_str} em {len(paginas)} páginas: {[p+1 for p in paginas]}")
+                            
+                            out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}.pdf")
+                            i = 1
+                            while os.path.exists(out):
+                                out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_{i}.pdf")
+                                i += 1
+                            
+                            if create_pdf(pdf_path, paginas, out):
+                                self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
+                                ok += 1
+                            else:
+                                nok += 1
+                    
+                    # Registrar PDF como processado
+                    if fingerprint:
+                        self.processed_pdfs[fingerprint] = {
+                            'nome': pdf_name,
+                            'data': time.strftime('%d/%m/%Y %H:%M:%S'),
+                            'extraidos': ok,
+                            'nao_encontrados': nok
+                        }
+                        self.save_processed_pdfs()
+                    
+                    total_ok += ok
+                    total_nok += nok
+                    total_duplicates += duplicates
+                    
+                    self.write_log(f"✓ PDF concluído: {ok} extraídos, {nok} não encontrados")
+                    
+                except Exception as e:
+                    self.write_log(f"❌ Erro ao processar {pdf_name}: {e}")
+            
+            # Parar timer e calcular tempo total
+            elapsed = self.stop_timer()
+            time_str = self.format_time(elapsed)
             
             self.write_log("\n" + "="*50)
-            self.write_log(f"Extraídos: {ok} | Não encontrados: {nok}")
+            self.write_log("📊 RESUMO GERAL DO PROCESSAMENTO")
+            self.write_log("="*50)
+            self.write_log(f"📂 PDFs na pasta: {len(pdf_files)}")
+            self.write_log(f"⏭️ Já processados: {len(ja_processados)}")
+            self.write_log(f"🆕 Novos processados: {len(novos_pdfs)}")
+            self.write_log(f"✓ Total extraídos: {total_ok}")
+            self.write_log(f"✗ Total não encontrados: {total_nok}")
+            if total_duplicates > 0:
+                self.write_log(f"⚠️ Contas duplicadas: {total_duplicates}")
+            self.write_log(f"⏱️ Tempo total: {time_str}")
+            self.write_log("="*50)
             
-            self.root.after(0, lambda: messagebox.showinfo("OK", f"Concluído!\n✓ {ok}\n✗ {nok}"))
+            self.root.after(0, lambda: self.status_var.set(f"Concluído - {total_ok} extraídos"))
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Processamento Concluído", 
+                f"PDFs processados: {len(novos_pdfs)}/{len(pdf_files)}\n"
+                f"✓ Extraídos: {total_ok}\n"
+                f"✗ Não encontrados: {total_nok}\n"
+                f"⏱️ Tempo: {time_str}"
+            ))
             
         except Exception as e:
-            self.write_log(f"ERRO: {e}")
+            self.stop_timer()
+            self.write_log(f"\n❌ ERRO: {e}")
+            import traceback
+            traceback.print_exc()
             self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
         finally:
             self.root.after(0, self.finish)
@@ -427,6 +890,7 @@ class App:
     def finish(self):
         self.prog.stop()
         self.btn.config(state='normal')
+        self.status_var.set("Pronto")
 
 
 if __name__ == "__main__":

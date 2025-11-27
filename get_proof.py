@@ -785,7 +785,29 @@ if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
             total_ok = 0
             total_nok = 0
             total_duplicates = 0
-            nao_encontrados = []
+            
+            # Dicionário para rastrear quais contas foram encontradas
+            contas_encontradas = set()  # Conjunto de contas que foram extraídas com sucesso
+            todas_contas = []  # Lista de todas as contas do Excel para verificar no final
+            
+            # Primeiro, coletar todas as contas do Excel
+            for row_idx, row in self.df.iterrows():
+                conta = row[conta_col]
+                nome = row[nome_col]
+                ccusto = row[ccusto_col]
+                
+                if pd.isna(conta) or str(conta).strip() == '':
+                    continue
+                
+                conta_str = str(conta).strip()
+                nome_str = str(nome).strip() if not pd.isna(nome) else 'N/A'
+                ccusto_str = str(ccusto).strip() if not pd.isna(ccusto) else 'N/A'
+                
+                todas_contas.append({
+                    'conta': conta_str,
+                    'nome': nome_str,
+                    'ccusto': ccusto_str
+                })
             
             for idx, (pdf_name, pdf_path, fingerprint) in enumerate(novos_pdfs, 1):
                 self.write_log(f"\n{'='*50}")
@@ -830,6 +852,8 @@ if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                             if create_pdf(pdf_path, paginas, out):
                                 self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
                                 ok += 1
+                                # Marcar que esta conta foi encontrada
+                                contas_encontradas.add(conta_str)
                             else:
                                 nok += 1
                     
@@ -856,27 +880,68 @@ if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
             elapsed = self.stop_timer()
             time_str = self.format_time(elapsed)
             
+            # Identificar contas que NÃO foram encontradas em NENHUM PDF
+            nao_encontrados = []
+            for conta_info in todas_contas:
+                if conta_info['conta'] not in contas_encontradas:
+                    nao_encontrados.append(conta_info)
+            
+            # Gerar arquivo TXT com comprovantes não encontrados
+            if nao_encontrados:
+                try:
+                    txt_path = os.path.join(out_dir, f"nao_encontrados_{time.strftime('%Y%m%d_%H%M%S')}.txt")
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write("="*80 + "\n")
+                        f.write("RELATÓRIO DE COMPROVANTES NÃO ENCONTRADOS\n")
+                        f.write("="*80 + "\n")
+                        f.write(f"Data/Hora: {time.strftime('%d/%m/%Y %H:%M:%S')}\n")
+                        f.write(f"Total de comprovantes não encontrados: {len(nao_encontrados)}\n")
+                        f.write(f"Total de contas no Excel: {len(todas_contas)}\n")
+                        f.write(f"Total de contas encontradas: {len(contas_encontradas)}\n")
+                        f.write("="*80 + "\n\n")
+                        
+                        for idx, item in enumerate(nao_encontrados, 1):
+                            f.write(f"{idx}. Conta: {item['conta']}\n")
+                            f.write(f"   Nome: {item['nome']}\n")
+                            f.write(f"   Centro de Custo: {item['ccusto']}\n")
+                            f.write("-"*80 + "\n")
+                        
+                        f.write("\n" + "="*80 + "\n")
+                        f.write("OBSERVAÇÃO: Estas contas NÃO foram encontradas em NENHUM dos PDFs processados.\n")
+                        f.write("Verifique se os dados estão corretos ou se os PDFs contêm estas informações.\n")
+                        f.write("="*80 + "\n")
+                    
+                    self.write_log(f"📄 Relatório de não encontrados salvo em: {os.path.basename(txt_path)}")
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao gerar relatório TXT: {e}")
+            
             self.write_log("\n" + "="*50)
             self.write_log("📊 RESUMO GERAL DO PROCESSAMENTO")
             self.write_log("="*50)
             self.write_log(f"📂 PDFs na pasta: {len(pdf_files)}")
             self.write_log(f"⏭️ Já processados: {len(ja_processados)}")
             self.write_log(f"🆕 Novos processados: {len(novos_pdfs)}")
+            self.write_log(f"📊 Total de contas no Excel: {len(todas_contas)}")
             self.write_log(f"✓ Total extraídos: {total_ok}")
-            self.write_log(f"✗ Total não encontrados: {total_nok}")
+            self.write_log(f"✗ Total não encontrados: {len(nao_encontrados)}")
+            if nao_encontrados:
+                self.write_log(f"📝 Comprovantes sem match salvos em arquivo TXT: {len(nao_encontrados)}")
             if total_duplicates > 0:
                 self.write_log(f"⚠️ Contas duplicadas: {total_duplicates}")
             self.write_log(f"⏱️ Tempo total: {time_str}")
             self.write_log("="*50)
             
-            self.root.after(0, lambda: self.status_var.set(f"Concluído - {total_ok} extraídos"))
-            self.root.after(0, lambda: messagebox.showinfo(
-                "Processamento Concluído", 
-                f"PDFs processados: {len(novos_pdfs)}/{len(pdf_files)}\n"
-                f"✓ Extraídos: {total_ok}\n"
-                f"✗ Não encontrados: {total_nok}\n"
-                f"⏱️ Tempo: {time_str}"
-            ))
+            # Mensagem de conclusão
+            msg_resultado = f"PDFs processados: {len(novos_pdfs)}/{len(pdf_files)}\n"
+            msg_resultado += f"📊 Contas no Excel: {len(todas_contas)}\n"
+            msg_resultado += f"✓ Extraídos: {total_ok}\n"
+            msg_resultado += f"✗ Não encontrados: {len(nao_encontrados)}\n"
+            if nao_encontrados:
+                msg_resultado += f"\n📄 Relatório de não encontrados gerado!\n"
+            msg_resultado += f"⏱️ Tempo: {time_str}"
+            
+            self.root.after(0, lambda: self.status_var.set(f"Concluído - {total_ok} extraídos, {len(nao_encontrados)} não encontrados"))
+            self.root.after(0, lambda: messagebox.showinfo("Processamento Concluído", msg_resultado))
             
         except Exception as e:
             self.stop_timer()

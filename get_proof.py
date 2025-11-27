@@ -459,6 +459,9 @@ class App:
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar zenity: {e}")
             
@@ -473,6 +476,9 @@ class App:
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
             
@@ -487,6 +493,9 @@ class App:
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar yad: {e}")
         
@@ -511,6 +520,9 @@ if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
+                else:
+                    # Usuário cancelou
+                    return None
             except Exception as e:
                 self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
         
@@ -530,6 +542,9 @@ if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                     if mac_path.startswith('alias '):
                         mac_path = mac_path[6:]
                     return mac_path.replace(':', '/')
+                else:
+                    # Usuário cancelou
+                    return None
             except Exception as e:
                 self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
         
@@ -561,6 +576,9 @@ if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar zenity: {e}")
             
@@ -577,6 +595,9 @@ if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
             
@@ -592,6 +613,9 @@ if ($folder.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         return result.stdout.strip()
+                    else:
+                        # Usuário cancelou
+                        return None
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao usar yad: {e}")
         
@@ -623,6 +647,9 @@ if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
+                else:
+                    # Usuário cancelou
+                    return None
             except Exception as e:
                 self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
         
@@ -651,6 +678,9 @@ if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
                     if mac_path.startswith('alias '):
                         mac_path = mac_path[6:]
                     return mac_path.replace(':', '/')
+                else:
+                    # Usuário cancelou
+                    return None
             except Exception as e:
                 self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
         

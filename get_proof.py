@@ -175,70 +175,18 @@ def create_pdf(pdf_path, page_numbers, output_path):
                     i += 1
                 target = candidate
 
-            # Tentar salvar com retry (útil para OneDrive/GoogleDrive)
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    # escrever em arquivo temporário e mover para destino (atomicidade)
-                    import tempfile
-                    dirpath = os.path.dirname(target) or '.'
-                    
-                    # Garantir que o diretório existe
-                    os.makedirs(dirpath, exist_ok=True)
-                    
-                    fd, tmpname = tempfile.mkstemp(dir=dirpath, suffix='.pdf', prefix='tmp_')
-                    os.close(fd)
-                    
-                    with open(tmpname, 'wb') as out:
-                        writer.write(out)
-                    
-                    # Forçar flush do sistema de arquivos
-                    if hasattr(os, 'sync'):
-                        os.sync()
-                    
-                    # Tentar mover o arquivo
-                    os.replace(tmpname, target)
-                    
-                    # Verificar se o arquivo foi criado com sucesso
-                    if os.path.exists(target) and os.path.getsize(target) > 0:
-                        return True
-                    
-                except PermissionError as e:
-                    # Erro comum com OneDrive/GoogleDrive - tentar novamente após delay
-                    if attempt < max_retries - 1:
-                        time.sleep(0.5 * (attempt + 1))  # Delay progressivo
-                        continue
-                    else:
-                        print(f"Erro de permissão ao salvar PDF (tentativa {attempt + 1}/{max_retries}): {e}")
-                        print(f"Caminho: {target}")
-                        raise
-                
-                except Exception as e:
-                    # Outros erros - tentar fallback direto
-                    if attempt < max_retries - 1:
-                        time.sleep(0.3)
-                        continue
-                    else:
-                        print(f"Erro ao salvar PDF com tempfile (tentativa {attempt + 1}/{max_retries}): {e}")
-                        # Tentar fallback direto
-                        try:
-                            with open(target, 'wb') as out:
-                                writer.write(out)
-                            if os.path.exists(target) and os.path.getsize(target) > 0:
-                                return True
-                        except Exception as e2:
-                            print(f"Erro no fallback direto: {e2}")
-                            print(f"Caminho problemático: {target}")
-                            print(f"Tamanho do caminho: {len(target)} caracteres")
-                            raise
+            # Salvar diretamente no arquivo de destino
+            try:
+                with open(target, 'wb') as out:
+                    writer.write(out)
+            except Exception as e:
+                print(f"Erro ao salvar PDF {target}: {e}")
+                return False
 
             return True
             
     except Exception as e:
-        import traceback
-        print(f"❌ Erro criar PDF: {e}")
-        print(f"Caminho de saída: {output_path}")
-        traceback.print_exc()
+        print(f"Erro criar PDF: {e}")
         return False
     finally:
         # Limpar referências
@@ -248,39 +196,44 @@ def create_pdf(pdf_path, page_numbers, output_path):
     return False
 
 
+def normalize_path(path):
+    """Normaliza path garantindo encoding correto para Windows/OneDrive/Google Drive"""
+    if not path:
+        return path
+    
+    try:
+        # Converter para string se necessário
+        if isinstance(path, bytes):
+            path = path.decode('utf-8', errors='replace')
+        
+        path = str(path).strip()
+        
+        # Normalizar barras para o sistema operacional
+        if platform.system() == 'Windows':
+            path = path.replace('/', '\\')
+        
+        # Resolver Path para garantir formato correto
+        path_obj = Path(path)
+        # Usar resolve() para expandir caminhos relativos e normalizar
+        try:
+            resolved = path_obj.resolve()
+            return str(resolved)
+        except (OSError, RuntimeError):
+            # Se resolve() falhar, retornar path normalizado básico
+            return os.path.normpath(path)
+    except Exception:
+        # Fallback: retornar path original
+        return path
+
+
 def clean_filename(name):
-    """Remove caracteres inválidos e limita tamanho para evitar problemas com OneDrive/GoogleDrive"""
+    """Remove caracteres inválidos"""
     if not name or str(name).lower() == 'nan':
         return "sem_nome"
-    
     name = str(name)
-    
-    # Remover/substituir caracteres problemáticos para Windows e serviços de nuvem
-    # OneDrive/GoogleDrive bloqueiam alguns destes caracteres
-    invalid_chars = '<>:"/\\|?*\n\r\t'
-    for c in invalid_chars:
+    for c in '<>:"/\\|?*\n\r\t':
         name = name.replace(c, '_')
-    
-    # Remover caracteres de controle e outros problemáticos
-    name = ''.join(char if ord(char) >= 32 else '_' for char in name)
-    
-    # Remover espaços múltiplos e normalizar
-    name = ' '.join(name.split())
-    
-    # OneDrive não permite nomes terminando com ponto ou espaço
-    name = name.rstrip('. ')
-    
-    # Limitar tamanho (Windows tem limite de 260 chars no caminho total)
-    # Deixar espaço para caminho + extensão
-    max_length = 80  # Reduzido para dar margem ao caminho completo
-    if len(name) > max_length:
-        name = name[:max_length].rstrip('. ')
-    
-    # Se ficou vazio após limpeza, usar nome padrão
-    if not name:
-        name = "sem_nome"
-    
-    return name
+    return ' '.join(name.split())[:100].strip()
 
 
 def find_column(df, names):
@@ -423,7 +376,9 @@ class App:
                                  variable=self.force_reprocess_var)
             chk.pack(side=tk.LEFT, padx=(4,12))
             ttk.Button(options_frame, text="🗑️ Limpar Histórico", 
-                      command=self.clear_processed_history, width=18).pack(side=tk.LEFT, padx=(0,4))
+                      command=self.clear_processed_history, width=22).pack(side=tk.LEFT, padx=(0,4))
+            ttk.Button(options_frame, text="🔍 Buscar Não Encontrados", 
+                      command=self.search_missing, width=28).pack(side=tk.LEFT, padx=(4,4))
         except Exception:
             # ignore if style/ttk not available
             pass
@@ -490,16 +445,68 @@ class App:
         try:
             folder = self._native_select_folder("Selecionar Pasta com PDFs de Comprovantes")
             if folder:
+                # Normalizar path para corrigir problemas de encoding
+                folder = normalize_path(folder)
+                
+                # Verificar se a pasta existe após normalização
+                if not os.path.exists(folder):
+                    self.write_log(f"⚠️ Pasta não encontrada após normalização: {folder}")
+                    messagebox.showerror("Erro", f"Pasta não encontrada: {folder}")
+                    return
+                
+                if not os.path.isdir(folder):
+                    self.write_log(f"⚠️ Caminho não é uma pasta: {folder}")
+                    messagebox.showerror("Erro", f"Caminho não é uma pasta válida")
+                    return
+                
                 self.pdf_folder_var.set(folder)
                 self.last_dir = folder
+                
+                # Usar múltiplos métodos para contar PDFs (compatível com OneDrive)
+                pdf_count = 0
                 try:
-                    pdf_count = len([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
-                except Exception:
-                    pdf_count = 0
-                self.write_log(f"✓ Pasta PDFs: {os.path.basename(folder)} ({pdf_count} PDFs)")
+                    counts = {}
+                    
+                    # Método 1: os.listdir
+                    try:
+                        count1 = len([f for f in os.listdir(folder) if f.lower().endswith('.pdf')])
+                        counts['listdir'] = count1
+                    except Exception as e1:
+                        self.write_log(f"  ⚠️ listdir falhou: {e1}")
+                        counts['listdir'] = 0
+                    
+                    # Método 2: Path.iterdir (mais confiável)
+                    try:
+                        path_obj = Path(folder)
+                        count2 = len([f for f in path_obj.iterdir() if f.is_file() and f.suffix.lower() == '.pdf'])
+                        counts['iterdir'] = count2
+                    except Exception as e2:
+                        self.write_log(f"  ⚠️ iterdir falhou: {e2}")
+                        counts['iterdir'] = 0
+                    
+                    # Método 3: os.scandir (eficiente)
+                    try:
+                        with os.scandir(folder) as entries:
+                            count3 = len([e for e in entries if e.is_file() and e.name.lower().endswith('.pdf')])
+                        counts['scandir'] = count3
+                    except Exception as e3:
+                        self.write_log(f"  ⚠️ scandir falhou: {e3}")
+                        counts['scandir'] = 0
+                    
+                    pdf_count = max(counts.values()) if counts else 0
+                    self.write_log(f"✓ Pasta PDFs: {os.path.basename(folder)} ({pdf_count} PDFs)")
+                    
+                    # Mostrar diferenças nos métodos se houver
+                    if len(set(counts.values())) > 1:
+                        methods_str = ", ".join([f"{k}={v}" for k, v in counts.items()])
+                        self.write_log(f"  ℹ️ Métodos: {methods_str}")
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao contar PDFs: {e}")
+                    self.write_log(f"  Pasta: {folder}")
             else:
                 return
         except Exception as e:
+            self.write_log(f"❌ Erro ao selecionar pasta: {e}")
             messagebox.showerror("Erro", f"Erro ao selecionar pasta: {e}")
     
     def get_excel(self):
@@ -507,6 +514,9 @@ class App:
         try:
             arquivo = self._native_select_file("Selecionar Planilha Excel", [("Todos os arquivos", "*.*")])
             if arquivo:
+                # Normalizar path
+                arquivo = normalize_path(arquivo)
+                
                 if os.path.isfile(arquivo):
                     self.excel_var.set(arquivo)
                     self.last_dir = os.path.dirname(arquivo)
@@ -540,6 +550,8 @@ class App:
         try:
             folder = self._native_select_folder("Selecionar Pasta de Saída")
             if folder:
+                # Normalizar path
+                folder = normalize_path(folder)
                 self.out_var.set(folder)
                 self.last_dir = folder
                 self.write_log(f"✓ Pasta de saída: {folder}")
@@ -550,253 +562,42 @@ class App:
     
     def _native_select_folder(self, title):
         """Seleciona pasta usando o explorador nativo do sistema operacional"""
-        sistema = platform.system()
-        attempted_native = False
-        
-        # Linux - tentar zenity, kdialog, ou yad
-        if sistema == "Linux":
-            # Tentar zenity primeiro (GNOME)
-            if shutil.which('zenity'):
-                try:
-                    attempted_native = True
-                    result = subprocess.run(
-                        ['zenity', '--file-selection', '--directory', f'--title={title}', f'--filename={self.last_dir}/'],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar zenity: {e}")
-            
-            # Tentar kdialog (KDE)
-            if shutil.which('kdialog'):
-                try:
-                    attempted_native = True
-                    result = subprocess.run(
-                        ['kdialog', '--getexistingdirectory', self.last_dir, '--title', title],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
-            
-            # Tentar yad
-            if shutil.which('yad'):
-                try:
-                    attempted_native = True
-                    result = subprocess.run(
-                        ['yad', '--file-selection', '--directory', f'--title={title}', f'--filename={self.last_dir}/'],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar yad: {e}")
-        
-        # Windows - usar powershell com OpenFileDialog (configurado para selecionar pasta)
-        elif sistema == "Windows":
-            try:
-                attempted_native = True
-                last_dir_esc = self.last_dir.replace('/', '\\\\')
-                # Usar OpenFileDialog configurado para permitir seleção de pasta
-                script = f'''
-                            Add-Type -AssemblyName System.Windows.Forms
-                            $dlg = New-Object System.Windows.Forms.OpenFileDialog
-                            $dlg.Title = "{title}"
-                            $dlg.InitialDirectory = "{last_dir_esc}"
-                            $dlg.ValidateNames = $false
-                            $dlg.CheckFileExists = $false
-                            $dlg.FileName = 'Select Folder'
-                            if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
-                                $path = Split-Path $dlg.FileName
-                                Write-Output $path
-                            }}
-                            '''
-                result = subprocess.run(
-                    ['powershell', '-NoProfile', '-Command', script],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-            except Exception as e:
-                self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
-        
-        # macOS - usar osascript
-        elif sistema == "Darwin":
-            try:
-                script = f'choose folder with prompt "{title}" default location (POSIX file "{self.last_dir}")'
-                result = subprocess.run(
-                    ['osascript', '-e', script],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Converter formato macOS para POSIX
-                    mac_path = result.stdout.strip()
-                    if mac_path.startswith('alias '):
-                        mac_path = mac_path[6:]
-                    return mac_path.replace(':', '/')
-            except Exception as e:
-                self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
-        
-        # Se já tentamos um diálogo nativo, tratar como cancelado e não abrir tkinter
-        if attempted_native:
-            return None
-
-        return filedialog.askdirectory(initialdir=self.last_dir, title=title)
+        # Usar sempre o diálogo tkinter padrão (funciona bem no Windows)
+        folder = filedialog.askdirectory(initialdir=self.last_dir, title=title)
+        if folder:
+            return normalize_path(folder)
+        return None
     
     def _native_select_file(self, title, filetypes):
         """Seleciona arquivo usando o explorador nativo do sistema operacional"""
-        sistema = platform.system()
-        attempted_native = False
-        
-        # Linux - tentar zenity, kdialog, ou yad
-        if sistema == "Linux":
-            # Construir filtro para zenity
-            filter_args = []
-            for name, pattern in filetypes:
-                if pattern != "*.*":
-                    filter_args.extend(['--file-filter', f'{name} | {pattern}'])
-            
-            # Tentar zenity primeiro (GNOME)
-            if shutil.which('zenity'):
-                try:
-                    attempted_native = True
-                    cmd = ['zenity', '--file-selection', f'--title={title}', f'--filename={self.last_dir}/'] + filter_args
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar zenity: {e}")
-            
-            # Tentar kdialog (KDE)
-            if shutil.which('kdialog'):
-                try:
-                    attempted_native = True
-                    # Construir filtro para kdialog
-                    filter_str = " ".join([pattern for _, pattern in filetypes if pattern != "*.*"])
-                    result = subprocess.run(
-                        ['kdialog', '--getopenfilename', self.last_dir, filter_str, '--title', title],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar kdialog: {e}")
-            
-            # Tentar yad
-            if shutil.which('yad'):
-                try:
-                    attempted_native = True
-                    cmd = ['yad', '--file-selection', f'--title={title}', f'--filename={self.last_dir}/'] + filter_args
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return result.stdout.strip()
-                except Exception as e:
-                    self.write_log(f"⚠️ Erro ao usar yad: {e}")
-        
-        # Windows - usar powershell com OpenFileDialog
-        elif sistema == "Windows":
-            try:
-                attempted_native = True
-                # Construir filtro de tipos
-                filter_parts = []
-                for name, pattern in filetypes:
-                    if pattern != "*.*":
-                        filter_parts.append(f"{name}|{pattern}")
-                filter_str = "|".join(filter_parts) if filter_parts else "Todos os arquivos|*.*"
-                
-                last_dir_esc = self.last_dir.replace('/', '\\\\')
-                script = f'''
-                            Add-Type -AssemblyName System.Windows.Forms
-                            $file = New-Object System.Windows.Forms.OpenFileDialog
-                            $file.Title = "{title}"
-                            $file.InitialDirectory = "{last_dir_esc}"
-                            $file.Filter = "{filter_str}"
-                            if ($file.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
-                                Write-Output $file.FileName
-                            }}
-                            '''
-                result = subprocess.run(
-                    ['powershell', '-NoProfile', '-Command', script],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
-            except Exception as e:
-                self.write_log(f"⚠️ Erro ao usar explorador nativo Windows: {e}")
-        
-        # macOS - usar osascript
-        elif sistema == "Darwin":
-            try:
-                # Construir filtro de tipos para macOS
-                extensions = []
-                for _, pattern in filetypes:
-                    if pattern != "*.*":
-                        exts = pattern.replace("*.", "").split()
-                        extensions.extend([f'"{ext}"' for ext in exts])
-                
-                type_filter = f" of type {{{','.join(extensions)}}}" if extensions else ""
-                script = f'choose file with prompt "{title}"{type_filter} default location (POSIX file "{self.last_dir}")'
-                
-                result = subprocess.run(
-                    ['osascript', '-e', script],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Converter formato macOS para POSIX
-                    mac_path = result.stdout.strip()
-                    if mac_path.startswith('alias '):
-                        mac_path = mac_path[6:]
-                    return mac_path.replace(':', '/')
-            except Exception as e:
-                self.write_log(f"⚠️ Erro ao usar explorador nativo macOS: {e}")
-        
-        # Se já tentamos um diálogo nativo, tratar como cancelado e não abrir tkinter
-        if attempted_native:
-            return None
-        
-        return filedialog.askopenfilename(initialdir=self.last_dir, title=title, filetypes=filetypes)
+        # Usar sempre o diálogo tkinter padrão (funciona bem no Windows)
+        arquivo = filedialog.askopenfilename(initialdir=self.last_dir, title=title, filetypes=filetypes)
+        if arquivo:
+            return normalize_path(arquivo)
+        return None
     
     def validate_pdf_folder(self):
         """Valida caminho da pasta de PDFs digitada"""
-        path = self.pdf_folder_var.get().strip()
+        path = normalize_path(self.pdf_folder_var.get().strip())
         if path and os.path.exists(path) and os.path.isdir(path):
             self.last_dir = path
-            pdf_count = len([f for f in os.listdir(path) if f.lower().endswith('.pdf')])
-            self.write_log(f"✓ Pasta PDFs: {os.path.basename(path)} ({pdf_count} PDFs)")
+            try:
+                # Tentar múltiplas abordagens para listar PDFs (útil para OneDrive)
+                pdf_count_listdir = len([f for f in os.listdir(path) if f.lower().endswith('.pdf')])
+                path_obj = Path(path)
+                pdf_count_iterdir = len([f for f in path_obj.iterdir() if f.is_file() and f.suffix.lower() == '.pdf'])
+                pdf_count = max(pdf_count_listdir, pdf_count_iterdir)
+                self.write_log(f"✓ Pasta PDFs: {os.path.basename(path)} ({pdf_count} PDFs)")
+                if pdf_count_listdir != pdf_count_iterdir:
+                    self.write_log(f"  ℹ️ Métodos: listdir={pdf_count_listdir}, iterdir={pdf_count_iterdir}")
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao contar PDFs: {e}")
         elif path:
             messagebox.showwarning("Aviso", "Pasta não encontrada!")
     
     def validate_excel(self):
         """Valida caminho do Excel digitado"""
-        path = self.excel_var.get().strip()
+        path = normalize_path(self.excel_var.get().strip())
         if path and os.path.exists(path) and (path.endswith('.xlsx') or path.endswith('.xls')):
             self.last_dir = os.path.dirname(path)
             self.write_log(f"✓ Excel: {os.path.basename(path)}")
@@ -836,6 +637,583 @@ class App:
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao limpar histórico: {e}")
     
+    def search_missing(self):
+        """Busca assistida para comprovantes não encontrados"""
+        if not self.pdf_folder_var.get():
+            messagebox.showwarning("Aviso", "Selecione a pasta de PDFs primeiro!")
+            return
+        
+        # Perguntar origem dos dados
+        choice_win = tk.Toplevel(self.root)
+        choice_win.title("Origem dos Dados")
+        choice_win.geometry("450x250")
+        choice_win.resizable(False, False)
+        
+        # Centralizar janela
+        choice_win.transient(self.root)
+        choice_win.grab_set()
+        
+        frame = ttk.Frame(choice_win, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="De onde deseja carregar os itens para buscar?", 
+                 font=('Segoe UI', 11, 'bold')).pack(pady=(0, 20))
+        
+        result = {'source': None}
+        
+        def use_txt():
+            result['source'] = 'txt'
+            choice_win.destroy()
+        
+        def use_excel():
+            result['source'] = 'excel'
+            choice_win.destroy()
+        
+        def cancel():
+            result['source'] = None
+            choice_win.destroy()
+        
+        # Botão 1: Arquivo TXT
+        btn_frame1 = ttk.Frame(frame)
+        btn_frame1.pack(fill=tk.X, pady=5)
+        ttk.Button(btn_frame1, text="📄 Arquivo TXT de Não Encontrados", 
+                  command=use_txt, width=40).pack()
+        ttk.Label(btn_frame1, text="Selecionar arquivo TXT gerado anteriormente", 
+                 font=('Segoe UI', 8), foreground='gray').pack()
+        
+        # Separador
+        ttk.Separator(frame, orient='horizontal').pack(fill=tk.X, pady=15)
+        
+        # Botão 2: Excel
+        btn_frame2 = ttk.Frame(frame)
+        btn_frame2.pack(fill=tk.X, pady=5)
+        ttk.Button(btn_frame2, text="📊 Planilha Excel Completa", 
+                  command=use_excel, width=40).pack()
+        ttk.Label(btn_frame2, text="Buscar todos os registros do Excel", 
+                 font=('Segoe UI', 8), foreground='gray').pack()
+        
+        # Botão cancelar
+        ttk.Button(frame, text="Cancelar", command=cancel, width=15).pack(pady=(20, 0))
+        
+        # Aguardar escolha
+        self.root.wait_window(choice_win)
+        
+        missing_items = []
+        
+        if result['source'] == 'txt':
+            # Selecionar arquivo TXT
+            txt_file = filedialog.askopenfilename(
+                title="Selecionar arquivo de não encontrados",
+                initialdir=self.last_dir,
+                filetypes=[("Arquivos de Texto", "*.txt"), ("Todos os arquivos", "*.*")]
+            )
+            
+            if not txt_file:
+                return
+            
+            txt_file = normalize_path(txt_file)
+            missing_items = self.parse_missing_txt(txt_file)
+            
+            if not missing_items:
+                messagebox.showinfo("Info", "Nenhum item encontrado no arquivo TXT.")
+                return
+            
+            self.write_log(f"\n{'='*50}")
+            self.write_log(f"🔍 BUSCA ASSISTIDA - Arquivo TXT")
+            self.write_log(f"{'='*50}")
+            self.write_log(f"📄 Arquivo: {os.path.basename(txt_file)}")
+            self.write_log(f"📊 Total de itens: {len(missing_items)}")
+            
+        elif result['source'] == 'excel':
+            # Usar Excel carregado ou solicitar
+            if self.df is None or not self.conta_col or not self.nome_col or not self.ccusto_col:
+                if not self.excel_var.get():
+                    messagebox.showwarning("Aviso", "Carregue uma planilha Excel primeiro!")
+                    return
+                else:
+                    messagebox.showwarning("Aviso", "Excel não está carregado corretamente.\nVerifique as colunas necessárias.")
+                    return
+            
+            # Carregar todos os registros do Excel
+            missing_items = []
+            for row_idx, row in self.df.iterrows():
+                conta = row[self.conta_col]
+                nome = row[self.nome_col]
+                ccusto = row[self.ccusto_col]
+                
+                if pd.isna(conta) or str(conta).strip() == '':
+                    continue
+                
+                conta_str = str(conta).strip()
+                nome_str = str(nome).strip() if not pd.isna(nome) else 'N/A'
+                ccusto_str = str(ccusto).strip() if not pd.isna(ccusto) else 'N/A'
+                
+                missing_items.append({
+                    'conta': conta_str,
+                    'nome': nome_str,
+                    'ccusto': ccusto_str
+                })
+            
+            if not missing_items:
+                messagebox.showinfo("Info", "Nenhum registro válido encontrado no Excel.")
+                return
+            
+            self.write_log(f"\n{'='*50}")
+            self.write_log(f"🔍 BUSCA ASSISTIDA - Excel Completo")
+            self.write_log(f"{'='*50}")
+            self.write_log(f"📊 Total de registros: {len(missing_items)}")
+        
+        else:
+            # Cancelado
+            return
+        
+        # Abrir janela de busca assistida
+        self.open_search_window(missing_items)
+    
+    def parse_missing_txt(self, txt_path):
+        """Lê arquivo TXT e extrai informações dos não encontrados"""
+        items = []
+        try:
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            current_item = {}
+            for line in lines:
+                line = line.strip()
+                if line.startswith("Conta:"):
+                    if current_item:
+                        items.append(current_item)
+                    current_item = {'conta': line.split("Conta:", 1)[1].strip()}
+                elif line.startswith("Nome:"):
+                    current_item['nome'] = line.split("Nome:", 1)[1].strip()
+                elif line.startswith("Centro de Custo:"):
+                    current_item['ccusto'] = line.split("Centro de Custo:", 1)[1].strip()
+            
+            if current_item:
+                items.append(current_item)
+                
+        except Exception as e:
+            self.write_log(f"❌ Erro ao ler arquivo: {e}")
+        
+        return items
+    
+    def open_search_window(self, missing_items):
+        """Abre janela interativa para buscar e confirmar comprovantes"""
+        search_win = tk.Toplevel(self.root)
+        search_win.title("🔍 Busca Assistida - Comprovantes Não Encontrados")
+        search_win.geometry("1000x700")
+        
+        # Frame principal
+        main_frame = ttk.Frame(search_win, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Header
+        header = ttk.Label(main_frame, text="Busca Assistida de Comprovantes", 
+                          font=('Segoe UI', 14, 'bold'))
+        header.pack(pady=(0, 10))
+        
+        # Info
+        info_text = f"Total de comprovantes não encontrados: {len(missing_items)}\n"
+        info_text += "Selecione um item e clique em 'Buscar' para procurar nos PDFs com critérios flexíveis."
+        info_label = ttk.Label(main_frame, text=info_text, font=('Segoe UI', 9))
+        info_label.pack(pady=(0, 10))
+        
+        # Frame para lista e detalhes
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Lista de não encontrados (esquerda)
+        list_frame = ttk.LabelFrame(content_frame, text="📋 Não Encontrados", padding=5)
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # Treeview para lista
+        columns = ('conta', 'nome', 'ccusto')
+        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+        tree.heading('conta', text='Conta')
+        tree.heading('nome', text='Nome')
+        tree.heading('ccusto', text='Centro de Custo')
+        tree.column('conta', width=100)
+        tree.column('nome', width=250)
+        tree.column('ccusto', width=150)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Adicionar itens
+        for item in missing_items:
+            tree.insert('', tk.END, values=(
+                item.get('conta', ''),
+                item.get('nome', ''),
+                item.get('ccusto', '')
+            ))
+        
+        # Frame de resultados (direita)
+        results_frame = ttk.LabelFrame(content_frame, text="🔍 Resultados da Busca", padding=5)
+        results_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Texto para resultados
+        results_text = scrolledtext.ScrolledText(results_frame, height=20, width=50, 
+                                                 font=('Courier New', 9), state='disabled')
+        results_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Frame de botões
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        status_var = tk.StringVar(value="Selecione um item e clique em Buscar")
+        status_label = ttk.Label(button_frame, textvariable=status_var, font=('Segoe UI', 9, 'italic'))
+        status_label.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Variável para armazenar resultados da busca atual
+        current_results = {'matches': [], 'selected_item': None}
+        
+        def search_selected():
+            """Busca o item selecionado nos PDFs"""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Aviso", "Selecione um item para buscar!")
+                return
+            
+            item_id = selection[0]
+            values = tree.item(item_id)['values']
+            conta = values[0]
+            nome = values[1]
+            ccusto = values[2]
+            
+            current_results['selected_item'] = {'conta': conta, 'nome': nome, 'ccusto': ccusto}
+            
+            status_var.set(f"Buscando: {nome}...")
+            results_text.config(state='normal')
+            results_text.delete(1.0, tk.END)
+            results_text.insert(tk.END, f"Buscando por:\n")
+            results_text.insert(tk.END, f"  Conta: {conta}\n")
+            results_text.insert(tk.END, f"  Nome: {nome}\n")
+            results_text.insert(tk.END, f"  C.Custo: {ccusto}\n")
+            results_text.insert(tk.END, f"\n{'='*50}\n\n")
+            results_text.config(state='disabled')
+            search_win.update()
+            
+            # Buscar nos PDFs com critérios flexíveis
+            matches = self.flexible_search(conta, nome, ccusto)
+            current_results['matches'] = matches
+            
+            # Mostrar resultados
+            results_text.config(state='normal')
+            if matches:
+                results_text.insert(tk.END, f"✓ Encontrados {len(matches)} possíveis matches:\n\n")
+                for i, match in enumerate(matches, 1):
+                    results_text.insert(tk.END, f"{i}. PDF: {match['pdf']}\n")
+                    results_text.insert(tk.END, f"   Página: {match['page'] + 1}\n")
+                    results_text.insert(tk.END, f"   Critério: {match['criteria']}\n")
+                    results_text.insert(tk.END, f"   Trecho:\n")
+                    results_text.insert(tk.END, f"   {match['snippet']}\n")
+                    results_text.insert(tk.END, f"\n{'-'*50}\n\n")
+                status_var.set(f"Encontrados {len(matches)} possíveis matches - Revise e confirme")
+            else:
+                results_text.insert(tk.END, "❌ Nenhum match encontrado mesmo com busca flexível.\n")
+                results_text.insert(tk.END, "\nDicas:\n")
+                results_text.insert(tk.END, "• Verifique se o nome está correto\n")
+                results_text.insert(tk.END, "• Verifique se a conta está correta\n")
+                results_text.insert(tk.END, "• Verifique se o comprovante está no PDF\n")
+                status_var.set("Nenhum match encontrado")
+            results_text.config(state='disabled')
+        
+        def extract_selected():
+            """Extrai os matches selecionados"""
+            if not current_results['matches']:
+                messagebox.showwarning("Aviso", "Faça uma busca primeiro!")
+                return
+            
+            # Abrir diálogo de confirmação com lista de matches
+            confirm_msg = f"Confirmar extração de {len(current_results['matches'])} comprovante(s)?\n\n"
+            for match in current_results['matches']:
+                confirm_msg += f"• {match['pdf']} - Pág {match['page'] + 1}\n"
+            
+            if not messagebox.askyesno("Confirmar Extração", confirm_msg):
+                return
+            
+            # Extrair
+            item = current_results['selected_item']
+            out_dir = normalize_path(self.out_var.get() or "comprovantes_extraidos")
+            pdf_folder = normalize_path(self.pdf_folder_var.get())
+            
+            success_count = 0
+            for match in current_results['matches']:
+                pdf_path = os.path.join(pdf_folder, match['pdf'])
+                nome_str = clean_filename(item['nome'])
+                ccusto_str = clean_filename(item['ccusto'])
+                
+                out_path = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_manual.pdf")
+                i = 1
+                while os.path.exists(out_path):
+                    out_path = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_manual_{i}.pdf")
+                    i += 1
+                
+                if create_pdf(pdf_path, [match['page']], out_path):
+                    success_count += 1
+                    self.write_log(f"✓ Extraído manualmente: {ccusto_str}_{nome_str} (pág {match['page'] + 1})")
+            
+            messagebox.showinfo("Sucesso", f"{success_count} comprovante(s) extraído(s) com sucesso!")
+            status_var.set(f"Extraídos {success_count} comprovantes")
+            
+            # Remover item da lista
+            if success_count > 0:
+                tree.delete(tree.selection())
+        
+        ttk.Button(button_frame, text="🔍 Buscar", command=search_selected, width=15).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="✓ Extrair Selecionados", command=extract_selected, width=20).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="❌ Fechar", command=search_win.destroy, width=15).pack(side=tk.RIGHT)
+    
+    def flexible_search(self, conta, nome, ccusto):
+        """Busca flexível nos PDFs com múltiplos critérios relaxados"""
+        matches = []
+        pdf_folder = normalize_path(self.pdf_folder_var.get())
+        
+        # Listar PDFs
+        pdf_files = []
+        try:
+            pdf_files = [f for f in os.listdir(pdf_folder) if f.lower().endswith('.pdf')]
+        except Exception:
+            return matches
+        
+        # Normalizar termos de busca
+        def normalize_search_text(s):
+            if not s:
+                return ""
+            nf = unicodedata.normalize('NFKD', str(s))
+            ascii_s = nf.encode('ascii', 'ignore').decode('ascii')
+            cleaned = re.sub(r'[^A-Za-z0-9\s]', ' ', ascii_s)
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip().upper()
+            return cleaned
+        
+        conta_norm = normalize_account(conta)
+        nome_norm = normalize_search_text(nome)
+        nome_parts = [p for p in nome_norm.split() if len(p) >= 3]
+        
+        # Buscar em cada PDF
+        for pdf_name in pdf_files:
+            pdf_path = os.path.join(pdf_folder, pdf_name)
+            
+            try:
+                pages = extract_pdf_pages(pdf_path)
+                
+                for page_num, page_data in pages.items():
+                    text = page_data['text']
+                    text_norm = page_data['norm_text']
+                    text_numbers = page_data['numbers']
+                    
+                    criteria_met = []
+                    
+                    # Critério 1: Conta encontrada
+                    if conta_norm and conta_norm in text_numbers:
+                        criteria_met.append("Conta exata")
+                    
+                    # Critério 2: Nome completo encontrado
+                    if nome_norm and nome_norm in text_norm:
+                        criteria_met.append("Nome completo")
+                    
+                    # Critério 3: Múltiplas partes do nome (flexível)
+                    if nome_parts:
+                        found_parts = sum(1 for part in nome_parts if part in text_norm)
+                        if found_parts >= max(2, len(nome_parts) // 2):
+                            criteria_met.append(f"{found_parts}/{len(nome_parts)} partes do nome")
+                    
+                    # Critério 4: Primeiro e último nome
+                    if len(nome_parts) >= 2:
+                        if nome_parts[0] in text_norm and nome_parts[-1] in text_norm:
+                            criteria_met.append("Primeiro + último nome")
+                    
+                    # Se encontrou pelo menos 1 critério, adicionar como candidato
+                    if criteria_met:
+                        # Extrair snippet (contexto)
+                        snippet = self.extract_snippet(text, nome, conta)
+                        
+                        matches.append({
+                            'pdf': pdf_name,
+                            'page': page_num,
+                            'criteria': ", ".join(criteria_met),
+                            'snippet': snippet,
+                            'score': len(criteria_met)
+                        })
+            
+            except Exception as e:
+                self.write_log(f"⚠️ Erro ao processar {pdf_name}: {e}")
+                continue
+        
+        # Ordenar por score (mais critérios primeiro)
+        matches.sort(key=lambda x: x['score'], reverse=True)
+        
+        return matches
+    
+    def extract_snippet(self, text, nome, conta, context_chars=150):
+        """Extrai trecho do texto ao redor do nome/conta encontrado"""
+        text = text or ""
+        
+        # Tentar encontrar posição do nome
+        nome_clean = str(nome).strip()
+        pos = text.upper().find(nome_clean.upper())
+        
+        if pos == -1:
+            # Tentar conta
+            conta_clean = str(conta).strip()
+            pos = text.find(conta_clean)
+        
+        if pos == -1:
+            # Retornar início do texto
+            snippet = text[:context_chars * 2]
+        else:
+            # Extrair contexto ao redor
+            start = max(0, pos - context_chars)
+            end = min(len(text), pos + len(nome_clean) + context_chars)
+            snippet = text[start:end]
+        
+        # Limpar e formatar
+        snippet = ' '.join(snippet.split())
+        if len(snippet) > 300:
+            snippet = snippet[:300] + "..."
+        
+        return snippet
+    
+    def diagnose_missing(self, conta_info, pdf_files, pdf_folder):
+        """Diagnostica por que um comprovante não foi encontrado"""
+        conta = conta_info['conta']
+        nome = conta_info['nome']
+        
+        # Normalizar para busca
+        def normalize_search_text(s):
+            if not s:
+                return ""
+            nf = unicodedata.normalize('NFKD', str(s))
+            ascii_s = nf.encode('ascii', 'ignore').decode('ascii')
+            cleaned = re.sub(r'[^A-Za-z0-9\s]', ' ', ascii_s)
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip().upper()
+            return cleaned
+        
+        conta_norm = normalize_account(conta)
+        nome_norm = normalize_search_text(nome)
+        nome_parts = [p for p in nome_norm.split() if len(p) >= 3]
+        
+        pdfs_com_conta = []
+        pdfs_com_nome = []
+        pdfs_com_ambos_separados = []
+        
+        # Cache de páginas extraídas para evitar reprocessamento
+        if not hasattr(self, '_pdf_cache'):
+            self._pdf_cache = {}
+        
+        # Verificar cada PDF
+        for pdf_name in pdf_files:
+            pdf_path = os.path.join(pdf_folder, pdf_name)
+            
+            try:
+                # Usar cache se disponível
+                if pdf_path not in self._pdf_cache:
+                    self._pdf_cache[pdf_path] = extract_pdf_pages(pdf_path)
+                
+                pages = self._pdf_cache[pdf_path]
+                
+                tem_conta_pdf = False
+                tem_nome_pdf = False
+                paginas_com_conta = []
+                paginas_com_nome = []
+                
+                for page_num, page_data in pages.items():
+                    text_norm = page_data['norm_text']
+                    text_numbers = page_data['numbers']
+                    
+                    # Verificar conta
+                    if conta_norm and conta_norm in text_numbers:
+                        tem_conta_pdf = True
+                        paginas_com_conta.append(page_num + 1)
+                    
+                    # Verificar nome
+                    if nome_norm and nome_norm in text_norm:
+                        tem_nome_pdf = True
+                        paginas_com_nome.append(page_num + 1)
+                    else:
+                        # Verificar partes do nome
+                        if nome_parts:
+                            found_parts = sum(1 for part in nome_parts if part in text_norm)
+                            if found_parts >= max(2, len(nome_parts) // 2):
+                                tem_nome_pdf = True
+                                paginas_com_nome.append(page_num + 1)
+                
+                if tem_conta_pdf:
+                    pdfs_com_conta.append(f"{pdf_name} (pág {paginas_com_conta})")
+                
+                if tem_nome_pdf:
+                    pdfs_com_nome.append(f"{pdf_name} (pág {paginas_com_nome})")
+                
+                # Verificar se tem ambos mas em páginas diferentes
+                if tem_conta_pdf and tem_nome_pdf:
+                    # Ver se há intersecção de páginas
+                    if not set(paginas_com_conta).intersection(set(paginas_com_nome)):
+                        pdfs_com_ambos_separados.append(pdf_name)
+                
+            except Exception:
+                continue
+        
+        # Montar diagnóstico
+        diagnostico = {
+            'encontrou_conta': len(pdfs_com_conta) > 0,
+            'encontrou_nome': len(pdfs_com_nome) > 0,
+            'pdfs_com_conta': pdfs_com_conta[:3],  # Limitar a 3 para não poluir
+            'pdfs_com_nome': pdfs_com_nome[:3],
+            'tipo': '',
+            'detalhes': '',
+            'sugestoes': []
+        }
+        
+        # Determinar tipo de problema
+        if not diagnostico['encontrou_conta'] and not diagnostico['encontrou_nome']:
+            diagnostico['tipo'] = 'Conta e Nome não encontrados'
+            diagnostico['detalhes'] = 'Nenhum dos dados (conta ou nome) foi encontrado em nenhum PDF'
+            diagnostico['sugestoes'] = [
+                'Verifique se a conta e o nome estão corretos no Excel',
+                'Confirme se o comprovante desta pessoa está nos PDFs fornecidos',
+                'Verifique se há erros de digitação nos dados'
+            ]
+        
+        elif diagnostico['encontrou_conta'] and not diagnostico['encontrou_nome']:
+            diagnostico['tipo'] = 'Conta encontrada, Nome não'
+            diagnostico['detalhes'] = f'A conta foi encontrada, mas o nome "{nome}" não aparece nas mesmas páginas'
+            diagnostico['sugestoes'] = [
+                'O nome no Excel pode estar diferente do nome no PDF',
+                'Verifique variações do nome (abreviações, nome completo vs nome social)',
+                'Use a busca assistida para ver o que está na página com esta conta'
+            ]
+        
+        elif not diagnostico['encontrou_conta'] and diagnostico['encontrou_nome']:
+            diagnostico['tipo'] = 'Nome encontrado, Conta não'
+            diagnostico['detalhes'] = f'O nome foi encontrado, mas a conta "{conta}" não aparece nas mesmas páginas'
+            diagnostico['sugestoes'] = [
+                'A conta no Excel pode estar incorreta ou diferente do PDF',
+                'Verifique se a conta tem dígito verificador ou formatação diferente',
+                'Use a busca assistida para ver qual conta está associada a este nome'
+            ]
+        
+        elif pdfs_com_ambos_separados:
+            diagnostico['tipo'] = 'Ambos em PDFs diferentes'
+            diagnostico['detalhes'] = 'Conta e nome foram encontrados, mas sempre em páginas diferentes do PDF'
+            diagnostico['sugestoes'] = [
+                'Pode haver homonímia (duas pessoas com nomes similares)',
+                'A conta pode pertencer a outra pessoa com nome parecido',
+                'Verifique manualmente os PDFs listados acima'
+            ]
+        
+        else:
+            diagnostico['tipo'] = 'Critérios não atendidos'
+            diagnostico['detalhes'] = 'Conta e/ou nome encontrados mas não na mesma página com critérios exigidos'
+            diagnostico['sugestoes'] = [
+                'Use a busca assistida com critérios flexíveis',
+                'Verifique se o formato dos dados no PDF é diferente do esperado'
+            ]
+        
+        return diagnostico
+    
     def start(self):
         if not self.pdf_folder_var.get() or not self.excel_var.get():
             messagebox.showerror("Erro", "Selecione a pasta de PDFs e o Excel!")
@@ -855,21 +1233,17 @@ class App:
     
     def process(self):
         try:
-            pdf_folder = self.pdf_folder_var.get()
-            out_dir = self.out_var.get()
+            pdf_folder = normalize_path(self.pdf_folder_var.get())
+            out_dir = normalize_path(self.out_var.get())
             conta_col = self.conta_col
             nome_col = self.nome_col
             ccusto_col = self.ccusto_col
             
-            # Verificar se é pasta do OneDrive/GoogleDrive e avisar
-            out_dir_lower = out_dir.lower()
-            is_cloud_folder = any(cloud in out_dir_lower for cloud in ['onedrive', 'google drive', 'googledrive', 'dropbox', 'icloud'])
-            
-            if is_cloud_folder:
-                self.write_log("\n⚠️ AVISO: Detectada pasta de sincronização na nuvem!")
-                self.write_log("   (OneDrive/GoogleDrive/Dropbox/iCloud)")
-                self.write_log("   Pode haver conflitos durante o salvamento dos PDFs.")
-                self.write_log("   Recomenda-se usar uma pasta local para melhor desempenho.\n")
+            # Verificar se as pastas existem
+            if not os.path.exists(pdf_folder) or not os.path.isdir(pdf_folder):
+                self.write_log(f"❌ Pasta de PDFs não encontrada: {pdf_folder}")
+                messagebox.showerror("Erro", f"Pasta de PDFs não encontrada")
+                return
             
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             
@@ -877,28 +1251,46 @@ class App:
             self.write_log("🚀 Iniciando processamento...")
             self.write_log("="*50)
             
-            # Verificar permissões de escrita
-            try:
-                test_file = os.path.join(out_dir, '.test_write_permission')
-                with open(test_file, 'w') as f:
-                    f.write('test')
-                os.remove(test_file)
-                self.write_log(f"✓ Permissões de escrita verificadas em: {out_dir}")
-            except Exception as e:
-                self.write_log(f"❌ ERRO: Sem permissão de escrita na pasta de saída!")
-                self.write_log(f"   Pasta: {out_dir}")
-                self.write_log(f"   Erro: {e}")
-                raise PermissionError(f"Sem permissão de escrita em: {out_dir}")
+            # Listar todos os PDFs na pasta usando múltiplos métodos (compatível com OneDrive)
+            pdf_files_set = set()
             
-            # Listar todos os PDFs na pasta
-            pdf_files = [f for f in os.listdir(pdf_folder) if f.lower().endswith('.pdf')]
-            pdf_files.sort()
+            # Método 1: os.listdir
+            try:
+                files_listdir = [f for f in os.listdir(pdf_folder) if f.lower().endswith('.pdf')]
+                pdf_files_set.update(files_listdir)
+                self.write_log(f"ℹ️ Método listdir: {len(files_listdir)} PDFs")
+            except Exception as e:
+                self.write_log(f"⚠️ Erro com listdir: {e}")
+            
+            # Método 2: Path.iterdir (confiável para OneDrive)
+            try:
+                path_obj = Path(pdf_folder)
+                files_iterdir = [f.name for f in path_obj.iterdir() if f.is_file() and f.suffix.lower() == '.pdf']
+                pdf_files_set.update(files_iterdir)
+                self.write_log(f"ℹ️ Método iterdir: {len(files_iterdir)} PDFs")
+            except Exception as e:
+                self.write_log(f"⚠️ Erro com iterdir: {e}")
+            
+            # Método 3: os.scandir (eficiente)
+            try:
+                with os.scandir(pdf_folder) as entries:
+                    files_scandir = [e.name for e in entries if e.is_file() and e.name.lower().endswith('.pdf')]
+                pdf_files_set.update(files_scandir)
+                self.write_log(f"ℹ️ Método scandir: {len(files_scandir)} PDFs")
+            except Exception as e:
+                self.write_log(f"⚠️ Erro com scandir: {e}")
+            
+            pdf_files = sorted(list(pdf_files_set))
             
             if not pdf_files:
                 self.write_log("\n⚠️ Nenhum PDF encontrado na pasta!")
+                self.write_log("   💡 Dica: Se os arquivos estão no OneDrive, tente:")
+                self.write_log("      1. Verificar se os PDFs foram baixados localmente")
+                self.write_log("      2. Clicar com botão direito nos PDFs > 'Sempre manter neste dispositivo'")
+                self.write_log("      3. Ou mover os PDFs para uma pasta local fora do OneDrive")
                 return
             
-            self.write_log(f"\n� Total de PDFs na pasta: {len(pdf_files)}")
+            self.write_log(f"\n📊 Total de PDFs encontrados: {len(pdf_files)}")
             
             # Separar PDFs novos e já processados (ou forçar reprocessamento)
             novos_pdfs = []
@@ -981,13 +1373,18 @@ class App:
                         nome = row[nome_col]
                         ccusto = row[ccusto_col]
                         
-                        # Verificar se dados estão presentes
+                        # Verificar se dados estão presentes - TODOS os campos obrigatórios
                         if pd.isna(conta) or str(conta).strip() == '':
                             continue
+                        if pd.isna(nome) or str(nome).strip() == '':
+                            continue
+                        if pd.isna(ccusto) or str(ccusto).strip() == '':
+                            continue
                         
+                        # Garantir que as variáveis são sempre recriadas para cada linha
                         conta_str = str(conta).strip()
-                        nome_str = clean_filename(nome)
-                        ccusto_str = clean_filename(ccusto)
+                        nome_str = clean_filename(str(nome).strip())
+                        ccusto_str = clean_filename(str(ccusto).strip())
                         
                         paginas = find_account_pages(conta_str, nome, pages)
                         
@@ -997,33 +1394,17 @@ class App:
                                 self.write_log(f"⚠️ Conta {conta_str} em {len(paginas)} páginas: {[p+1 for p in paginas]}")
                             
                             out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}.pdf")
-                            
-                            # Verificar se o caminho é muito longo (problema no Windows/OneDrive)
-                            if len(out) > 240:  # Deixar margem
-                                self.write_log(f"⚠️ Caminho muito longo ({len(out)} chars), truncando nome...")
-                                # Reduzir nome mantendo só primeiros caracteres
-                                nome_curto = nome_str[:30]
-                                ccusto_curto = ccusto_str[:30]
-                                out = os.path.join(out_dir, f"{ccusto_curto}_{nome_curto}.pdf")
-                            
                             i = 1
                             while os.path.exists(out):
                                 out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_{i}.pdf")
                                 i += 1
                             
-                            try:
-                                if create_pdf(pdf_path, paginas, out):
-                                    self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
-                                    ok += 1
-                                    # Marcar que esta conta foi encontrada
-                                    contas_encontradas.add(conta_str)
-                                else:
-                                    self.write_log(f"❌ FALHA ao salvar PDF: {ccusto_str}_{nome_str}")
-                                    self.write_log(f"   Caminho: {out}")
-                                    nok += 1
-                            except Exception as e_pdf:
-                                self.write_log(f"❌ ERRO ao criar PDF para {conta_str}: {e_pdf}")
-                                self.write_log(f"   Caminho problemático: {out}")
+                            if create_pdf(pdf_path, paginas, out):
+                                self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
+                                ok += 1
+                                # Marcar que esta conta foi encontrada
+                                contas_encontradas.add(conta_str)
+                            else:
                                 nok += 1
                     
                     # Registrar PDF como processado
@@ -1049,38 +1430,102 @@ class App:
             elapsed = self.stop_timer()
             time_str = self.format_time(elapsed)
             
-            # Identificar contas que NÃO foram encontradas em NENHUM PDF
             nao_encontrados = []
-            for conta_info in todas_contas:
-                if conta_info['conta'] not in contas_encontradas:
-                    nao_encontrados.append(conta_info)
-            
-            # Gerar arquivo TXT com comprovantes não encontrados
+            try:
+                # Construir índice das contas e nomes do Excel
+                excel_accounts = {}
+                excel_names = []
+                for row_idx, row in self.df.iterrows():
+                    acc = row[conta_col]
+                    name = row[nome_col] if nome_col in row else ''
+                    if pd.isna(acc) or str(acc).strip() == '':
+                        continue
+                    acc_norm = normalize_account(acc)
+                    if not acc_norm:
+                        continue
+                    excel_accounts.setdefault(acc_norm, set()).add(str(name).strip())
+                    # lista de nomes para verificação de presença nas páginas
+                    if not pd.isna(name) and str(name).strip():
+                        # normalizar simples (remover acentos e uppercase)
+                        nf = unicodedata.normalize('NFKD', str(name))
+                        ascii_name = nf.encode('ascii', 'ignore').decode('ascii')
+                        name_norm = re.sub(r'[^A-Za-z0-9\s]', ' ', ascii_name).upper()
+                        excel_names.append((name_norm, str(name).strip()))
+
+                # Padrão para encontrar sequências que pareçam conta nos PDFs
+                acc_regex = re.compile(r"\d{4,6}[-\s]?\d|\d{4,6}")
+
+                for pdf_name in pdf_files:
+                    pdf_path = os.path.join(pdf_folder, pdf_name)
+                    try:
+                        pages = extract_pdf_pages(pdf_path)
+                    except Exception:
+                        continue
+
+                    for page_num, page_data in pages.items():
+                        text = page_data.get('text', '')
+                        text_norm = page_data.get('norm_text', '')
+
+                        found_accs = acc_regex.findall(text)
+                        found_accs_norm = [normalize_account(a) for a in found_accs if normalize_account(a)]
+
+                        # Encontrar nomes do Excel presentes na página
+                        names_on_page = []
+                        for name_norm, orig in excel_names:
+                            if name_norm and name_norm in text_norm:
+                                names_on_page.append(orig)
+
+                        # Determinar contas que NÃO estão na planilha
+                        missing_accounts = [a for a in found_accs_norm if a not in excel_accounts]
+
+                        # Se houve contas não referenciadas, ou se houver nome mas sem conta correspondente, registrar
+                        motivo = None
+                        if missing_accounts:
+                            motivo = 'Conta(s) do comprovante NÃO encontradas na planilha'
+                        elif names_on_page and not found_accs_norm:
+                            motivo = 'Nome encontrado no comprovante, mas sem conta detectada'
+
+                        if motivo:
+                            snippet = self.extract_snippet(text, names_on_page[0] if names_on_page else '', missing_accounts[0] if missing_accounts else '')
+                            nao_encontrados.append({
+                                'pdf': pdf_name,
+                                'page': page_num + 1,
+                                'accounts_found': found_accs,
+                                'missing_accounts': missing_accounts,
+                                'names_found': names_on_page,
+                                'motivo': motivo,
+                                'snippet': snippet
+                            })
+            except Exception:
+                nao_encontrados = []
+
+            # Gerar arquivo TXT com comprovantes NÃO referenciados na planilha
             if nao_encontrados:
                 try:
                     txt_path = os.path.join(out_dir, f"nao_encontrados_{time.strftime('%Y%m%d_%H%M%S')}.txt")
                     with open(txt_path, 'w', encoding='utf-8') as f:
                         f.write("="*80 + "\n")
-                        f.write("RELATÓRIO DE COMPROVANTES NÃO ENCONTRADOS\n")
+                        f.write("RELATÓRIO DE COMPROVANTES (PDF -> PLANILHA) - NÃO REFERENCIADOS\n")
                         f.write("="*80 + "\n")
                         f.write(f"Data/Hora: {time.strftime('%d/%m/%Y %H:%M:%S')}\n")
-                        f.write(f"Total de comprovantes não encontrados: {len(nao_encontrados)}\n")
-                        f.write(f"Total de contas no Excel: {len(todas_contas)}\n")
-                        f.write(f"Total de contas encontradas: {len(contas_encontradas)}\n")
+                        f.write(f"Total de páginas com comprovantes não referenciados: {len(nao_encontrados)}\n")
+                        f.write(f"PDFs processados: {len(pdf_files)}\n")
                         f.write("="*80 + "\n\n")
-                        
+
                         for idx, item in enumerate(nao_encontrados, 1):
-                            f.write(f"{idx}. Conta: {item['conta']}\n")
-                            f.write(f"   Nome: {item['nome']}\n")
-                            f.write(f"   Centro de Custo: {item['ccusto']}\n")
-                            f.write("-"*80 + "\n")
-                        
-                        f.write("\n" + "="*80 + "\n")
-                        f.write("OBSERVAÇÃO: Estas contas NÃO foram encontradas em NENHUM dos PDFs processados.\n")
-                        f.write("Verifique se os dados estão corretos ou se os PDFs contêm estas informações.\n")
-                        f.write("="*80 + "\n")
-                    
-                    self.write_log(f"📄 Relatório de não encontrados salvo em: {os.path.basename(txt_path)}")
+                            f.write(f"{idx}. PDF: {item['pdf']}\n")
+                            f.write(f"   Página: {item['page']}\n")
+                            if item['accounts_found']:
+                                f.write(f"   Contas extraídas da página: {', '.join(item['accounts_found'])}\n")
+                            if item['missing_accounts']:
+                                f.write(f"   Contas NÃO encontradas na planilha: {', '.join(item['missing_accounts'])}\n")
+                            if item['names_found']:
+                                f.write(f"   Nome(s) encontrado(s) na página: {', '.join(item['names_found'])}\n")
+                            f.write(f"   Motivo: {item['motivo']}\n")
+                            f.write(f"   Trecho: {item['snippet']}\n")
+                            f.write("-"*80 + "\n\n")
+
+                    self.write_log(f"📄 Relatório detalhado de não referenciados salvo em: {os.path.basename(txt_path)}")
                 except Exception as e:
                     self.write_log(f"⚠️ Erro ao gerar relatório TXT: {e}")
             
@@ -1119,6 +1564,10 @@ class App:
             traceback.print_exc()
             self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
         finally:
+            # Limpar cache de PDFs para liberar memória
+            if hasattr(self, '_pdf_cache'):
+                self._pdf_cache.clear()
+            
             self.root.after(0, self.finish)
     
     def finish(self):

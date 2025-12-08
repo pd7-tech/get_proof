@@ -1354,6 +1354,10 @@ class App:
                     'ccusto': ccusto_str
                 })
             
+            # Rastrear páginas processadas
+            total_paginas_pdfs = 0
+            paginas_com_match = set()  # páginas que tiveram match (PDF + número da página)
+            
             for idx, (pdf_name, pdf_path, fingerprint) in enumerate(novos_pdfs, 1):
                 self.write_log(f"\n{'='*50}")
                 self.write_log(f"📄 Processando PDF {idx}/{len(novos_pdfs)}: {pdf_name}")
@@ -1362,7 +1366,8 @@ class App:
                 
                 try:
                     pages = extract_pdf_pages(pdf_path)
-                    self.write_log(f"✓ Páginas extraídas: {len(pages)}")
+                    total_paginas_pdfs += len(pages)
+                    self.write_log(f"📄 Total de páginas neste PDF: {len(pages)}")
                     
                     ok = 0
                     nok = 0
@@ -1389,6 +1394,10 @@ class App:
                         paginas = find_account_pages(conta_str, nome, pages)
                         
                         if paginas:
+                            # Registrar quais páginas tiveram match
+                            for pag in paginas:
+                                paginas_com_match.add(f"{pdf_name}|{pag}")
+                            
                             if len(paginas) > 1:
                                 duplicates += 1
                                 self.write_log(f"⚠️ Conta {conta_str} em {len(paginas)} páginas: {[p+1 for p in paginas]}")
@@ -1421,141 +1430,167 @@ class App:
                     total_nok += nok
                     total_duplicates += duplicates
                     
-                    self.write_log(f"✓ PDF concluído: {ok} extraídos, {nok} não encontrados")
+                    self.write_log(f"✓ Comprovantes extraídos deste PDF: {ok}")
                     
                 except Exception as e:
                     self.write_log(f"❌ Erro ao processar {pdf_name}: {e}")
+            
+            # Calcular quantas páginas dos PDFs ficaram SEM match com a planilha
+            paginas_sem_match = total_paginas_pdfs - len(paginas_com_match)
+            
+            self.write_log(f"\n📊 ESTATÍSTICAS DE PÁGINAS:")
+            self.write_log(f"   Total de páginas nos PDFs: {total_paginas_pdfs}")
+            self.write_log(f"   Páginas COM match (extraídas): {len(paginas_com_match)}")
+            self.write_log(f"   Páginas SEM match na planilha: {paginas_sem_match}")
             
             # Parar timer e calcular tempo total
             elapsed = self.stop_timer()
             time_str = self.format_time(elapsed)
             
+            # Comprovantes nos PDFs que NÃO têm funcionário correspondente na planilha
             nao_encontrados = []
-            try:
-                # Construir índice das contas e nomes do Excel
-                excel_accounts = {}
-                excel_names = []
-                for row_idx, row in self.df.iterrows():
-                    acc = row[conta_col]
-                    name = row[nome_col] if nome_col in row else ''
-                    if pd.isna(acc) or str(acc).strip() == '':
-                        continue
-                    acc_norm = normalize_account(acc)
-                    if not acc_norm:
-                        continue
-                    excel_accounts.setdefault(acc_norm, set()).add(str(name).strip())
-                    # lista de nomes para verificação de presença nas páginas
-                    if not pd.isna(name) and str(name).strip():
-                        # normalizar simples (remover acentos e uppercase)
-                        nf = unicodedata.normalize('NFKD', str(name))
-                        ascii_name = nf.encode('ascii', 'ignore').decode('ascii')
-                        name_norm = re.sub(r'[^A-Za-z0-9\s]', ' ', ascii_name).upper()
-                        excel_names.append((name_norm, str(name).strip()))
-
-                # Padrão para encontrar sequências que pareçam conta nos PDFs
-                acc_regex = re.compile(r"\d{4,6}[-\s]?\d|\d{4,6}")
-
-                for pdf_name in pdf_files:
-                    pdf_path = os.path.join(pdf_folder, pdf_name)
-                    try:
-                        pages = extract_pdf_pages(pdf_path)
-                    except Exception:
-                        continue
-
+            
+            # Criar índice de contas do Excel para busca rápida
+            contas_excel_set = set()
+            for conta_info in todas_contas:
+                conta_norm = normalize_account(conta_info['conta'])
+                if conta_norm:
+                    contas_excel_set.add(conta_norm)
+            
+            self.write_log(f"\n🔍 Analisando páginas sem match para identificar contas não cadastradas...")
+            
+            # Percorrer todos os PDFs e analisar CADA PÁGINA que não teve match
+            for pdf_name in pdf_files:
+                pdf_path = os.path.join(pdf_folder, pdf_name)
+                try:
+                    pages = extract_pdf_pages(pdf_path)
+                    
                     for page_num, page_data in pages.items():
+                        # Verificar se esta página teve match
+                        pagina_id = f"{pdf_name}|{page_num}"
+                        if pagina_id in paginas_com_match:
+                            continue  # Já foi extraída, pular
+                        
                         text = page_data.get('text', '')
-                        text_norm = page_data.get('norm_text', '')
-
-                        found_accs = acc_regex.findall(text)
-                        found_accs_norm = [normalize_account(a) for a in found_accs if normalize_account(a)]
-
-                        # Encontrar nomes do Excel presentes na página
-                        names_on_page = []
-                        for name_norm, orig in excel_names:
-                            if name_norm and name_norm in text_norm:
-                                names_on_page.append(orig)
-
-                        # Determinar contas que NÃO estão na planilha
-                        missing_accounts = [a for a in found_accs_norm if a not in excel_accounts]
-
-                        # Se houve contas não referenciadas, ou se houver nome mas sem conta correspondente, registrar
-                        motivo = None
-                        if missing_accounts:
-                            motivo = 'Conta(s) do comprovante NÃO encontradas na planilha'
-                        elif names_on_page and not found_accs_norm:
-                            motivo = 'Nome encontrado no comprovante, mas sem conta detectada'
-
-                        if motivo:
-                            snippet = self.extract_snippet(text, names_on_page[0] if names_on_page else '', missing_accounts[0] if missing_accounts else '')
+                        
+                        # Procurar padrões de conta (4-6 dígitos, possivelmente com separador)
+                        acc_pattern = re.compile(r'\b\d{4,6}[-\s]?\d?\b')
+                        contas_encontradas_pagina = acc_pattern.findall(text)
+                        
+                        if not contas_encontradas_pagina:
+                            # Página sem padrão de conta - pode ser página em branco ou cabeçalho
+                            continue
+                        
+                        # Pegar a primeira conta mais provável (geralmente a principal da página)
+                        melhor_conta = None
+                        for conta_raw in contas_encontradas_pagina:
+                            conta_norm = normalize_account(conta_raw)
+                            
+                            # Filtrar contas válidas (4-7 dígitos)
+                            if conta_norm and len(conta_norm) >= 4 and len(conta_norm) <= 7:
+                                melhor_conta = conta_raw
+                                break
+                        
+                        if not melhor_conta:
+                            continue
+                        
+                        conta_norm = normalize_account(melhor_conta)
+                        
+                        # Verificar se a conta NÃO está na planilha
+                        if conta_norm not in contas_excel_set:
+                            # Extrair um trecho do texto ao redor
+                            pos = text.find(melhor_conta)
+                            if pos != -1:
+                                start = max(0, pos - 80)
+                                end = min(len(text), pos + 150)
+                                snippet = text[start:end].replace('\n', ' ')
+                                snippet = ' '.join(snippet.split())
+                                if len(snippet) > 200:
+                                    snippet = snippet[:200] + "..."
+                            else:
+                                snippet = ' '.join(text.split())[:200] + "..."
+                            
                             nao_encontrados.append({
                                 'pdf': pdf_name,
-                                'page': page_num + 1,
-                                'accounts_found': found_accs,
-                                'missing_accounts': missing_accounts,
-                                'names_found': names_on_page,
-                                'motivo': motivo,
-                                'snippet': snippet
+                                'pagina': page_num + 1,
+                                'conta': melhor_conta,
+                                'conta_normalizada': conta_norm,
+                                'trecho': snippet
                             })
-            except Exception:
-                nao_encontrados = []
+                
+                except Exception as e:
+                    self.write_log(f"⚠️ Erro ao analisar {pdf_name}: {e}")
+                    continue
 
-            # Gerar arquivo TXT com comprovantes NÃO referenciados na planilha
+            # Gerar arquivo TXT com comprovantes que NÃO têm funcionário na planilha
             if nao_encontrados:
                 try:
-                    txt_path = os.path.join(out_dir, f"nao_encontrados_{time.strftime('%Y%m%d_%H%M%S')}.txt")
+                    txt_path = os.path.join(out_dir, f"comprovantes_sem_funcionario_{time.strftime('%Y%m%d_%H%M%S')}.txt")
                     with open(txt_path, 'w', encoding='utf-8') as f:
                         f.write("="*80 + "\n")
-                        f.write("RELATÓRIO DE COMPROVANTES (PDF -> PLANILHA) - NÃO REFERENCIADOS\n")
+                        f.write("RELATÓRIO DE COMPROVANTES SEM FUNCIONÁRIO NA PLANILHA\n")
                         f.write("="*80 + "\n")
                         f.write(f"Data/Hora: {time.strftime('%d/%m/%Y %H:%M:%S')}\n")
-                        f.write(f"Total de páginas com comprovantes não referenciados: {len(nao_encontrados)}\n")
                         f.write(f"PDFs processados: {len(pdf_files)}\n")
+                        f.write(f"Comprovantes extraídos com sucesso: {total_ok}\n")
+                        f.write(f"Comprovantes SEM funcionário na planilha: {len(nao_encontrados)}\n")
                         f.write("="*80 + "\n\n")
+                        f.write("ESTES SÃO COMPROVANTES QUE EXISTEM NOS PDFs MAS NÃO TÊM\n")
+                        f.write("FUNCIONÁRIO CORRESPONDENTE CADASTRADO NA PLANILHA:\n")
+                        f.write("-"*80 + "\n\n")
 
                         for idx, item in enumerate(nao_encontrados, 1):
                             f.write(f"{idx}. PDF: {item['pdf']}\n")
-                            f.write(f"   Página: {item['page']}\n")
-                            if item['accounts_found']:
-                                f.write(f"   Contas extraídas da página: {', '.join(item['accounts_found'])}\n")
-                            if item['missing_accounts']:
-                                f.write(f"   Contas NÃO encontradas na planilha: {', '.join(item['missing_accounts'])}\n")
-                            if item['names_found']:
-                                f.write(f"   Nome(s) encontrado(s) na página: {', '.join(item['names_found'])}\n")
-                            f.write(f"   Motivo: {item['motivo']}\n")
-                            f.write(f"   Trecho: {item['snippet']}\n")
+                            f.write(f"   Página: {item['pagina']}\n")
+                            f.write(f"   Conta encontrada: {item['conta']}\n")
+                            f.write(f"   Status: Conta NÃO cadastrada na planilha\n")
                             f.write("-"*80 + "\n\n")
+                        
+                        f.write("\n" + "="*80 + "\n")
+                        f.write("O QUE FAZER:\n")
+                        f.write("="*80 + "\n")
+                        f.write("1. Verifique se estas contas deveriam estar cadastradas na planilha\n")
+                        f.write("2. Adicione os funcionários faltantes na planilha se necessário\n")
+                        f.write("3. Ou ignore se forem contas inválidas/irrelevantes\n")
+                        f.write("4. Reprocesse após atualizar a planilha\n")
+                        f.write("="*80 + "\n")
 
-                    self.write_log(f"📄 Relatório detalhado de não referenciados salvo em: {os.path.basename(txt_path)}")
+                    self.write_log(f"📄 Relatório salvo: {os.path.basename(txt_path)}")
                 except Exception as e:
-                    self.write_log(f"⚠️ Erro ao gerar relatório TXT: {e}")
+                    self.write_log(f"⚠️ Erro ao gerar relatório: {e}")
             
             self.write_log("\n" + "="*50)
-            self.write_log("📊 RESUMO GERAL DO PROCESSAMENTO")
+            self.write_log("📊 RESUMO DO PROCESSAMENTO")
             self.write_log("="*50)
-            self.write_log(f"📂 PDFs na pasta: {len(pdf_files)}")
-            self.write_log(f"⏭️ Já processados: {len(ja_processados)}")
-            self.write_log(f"🆕 Novos processados: {len(novos_pdfs)}")
-            self.write_log(f"📊 Total de contas no Excel: {len(todas_contas)}")
-            self.write_log(f"✓ Total extraídos: {total_ok}")
-            self.write_log(f"✗ Total não encontrados: {len(nao_encontrados)}")
+            self.write_log(f"📂 PDFs processados: {len(novos_pdfs)}")
+            self.write_log(f"📄 Total de páginas/comprovantes: {total_paginas_pdfs}")
+            self.write_log(f"")
+            self.write_log(f"✓ Comprovantes extraídos (com match): {total_ok} páginas")
+            self.write_log(f"✗ Comprovantes SEM funcionário cadastrado: {len(nao_encontrados)} páginas")
+            self.write_log(f"❓ Outras páginas: {total_paginas_pdfs - total_ok - len(nao_encontrados)}")
+            self.write_log(f"")
             if nao_encontrados:
-                self.write_log(f"📝 Comprovantes sem match salvos em arquivo TXT: {len(nao_encontrados)}")
+                self.write_log(f"📝 Relatório de páginas sem funcionário salvo em TXT")
             if total_duplicates > 0:
-                self.write_log(f"⚠️ Contas duplicadas: {total_duplicates}")
+                self.write_log(f"⚠️ Comprovantes em múltiplas páginas: {total_duplicates}")
             self.write_log(f"⏱️ Tempo total: {time_str}")
             self.write_log("="*50)
             
             # Mensagem de conclusão
-            msg_resultado = f"PDFs processados: {len(novos_pdfs)}/{len(pdf_files)}\n"
-            msg_resultado += f"📊 Contas no Excel: {len(todas_contas)}\n"
-            msg_resultado += f"✓ Extraídos: {total_ok}\n"
-            msg_resultado += f"✗ Não encontrados: {len(nao_encontrados)}\n"
-            if nao_encontrados:
-                msg_resultado += f"\n📄 Relatório de não encontrados gerado!\n"
-            msg_resultado += f"⏱️ Tempo: {time_str}"
+            outras = total_paginas_pdfs - total_ok - len(nao_encontrados)
             
-            self.root.after(0, lambda: self.status_var.set(f"Concluído - {total_ok} extraídos, {len(nao_encontrados)} não encontrados"))
-            self.root.after(0, lambda: messagebox.showinfo("Processamento Concluído", msg_resultado))
+            msg_resultado += f"📄 Total de páginas: {total_paginas_pdfs}"
+            msg_resultado += f"✓ Extraídos: {total_ok}"
+            msg_resultado += f"✗ Sem funcionário: {len(nao_encontrados)}"
+            if outras > 0:
+                msg_resultado += f"❓ Outras: {outras}"
+            if nao_encontrados:
+                msg_resultado += f"📄 Ver relatório TXT"
+            msg_resultado += f"⏱️ {time_str}"
+            
+            self.root.after(0, lambda: self.status_var.set(f"{total_ok}/{total_paginas_pdfs} extraídos"))
+            self.root.after(0, lambda: messagebox.showinfo("Concluído", msg_resultado))
+
             
         except Exception as e:
             self.stop_timer()

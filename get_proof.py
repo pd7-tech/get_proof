@@ -44,6 +44,72 @@ def normalize_account(conta):
     return re.sub(r'[^0-9]', '', str(conta))
 
 
+def extract_credited_account_section(text):
+    if not text:
+        return ""
+    
+    # Padrões possíveis de cabeçalho da seção (variações)
+    section_patterns = [
+        r'dados\s+da\s+conta\s+creditada',
+        r'conta\s+creditada',
+        r'favorecido',
+        r'benefici[aá]rio',
+    ]
+    
+    # Padrões que indicam o fim da seção (início da próxima seção)
+    end_patterns = [
+        r'dados\s+do\s+pagador',
+        r'dados\s+da\s+transfer[eê]ncia',
+        r'dados\s+do\s+comprovante',
+        r'autenticac[aã]o',
+        r'valor',
+        r'data\s+da\s+operac[aã]o',
+    ]
+    
+    # Normalizar texto para busca (manter pontuação para melhor detecção)
+    text_upper = text.upper()
+    
+    # Procurar início da seção
+    start_pos = -1
+    matched_pattern = None
+    
+    for pattern in section_patterns:
+        match = re.search(pattern, text_upper, re.IGNORECASE)
+        if match:
+            start_pos = match.start()
+            matched_pattern = pattern
+            break
+    
+    # Se não encontrou a seção, retornar texto vazio
+    if start_pos == -1:
+        return ""
+    
+    # Procurar fim da seção (próxima seção ou fim razoável)
+    end_pos = len(text)
+    
+    # Buscar a partir do início da seção encontrada
+    text_after_start = text_upper[start_pos:]
+    
+    for pattern in end_patterns:
+        # Buscar após o cabeçalho (pular pelo menos 20 caracteres para não pegar o próprio cabeçalho)
+        match = re.search(pattern, text_after_start[50:], re.IGNORECASE)
+        if match:
+            # Ajustar posição relativa ao texto original
+            candidate_end = start_pos + 50 + match.start()
+            if candidate_end < end_pos:
+                end_pos = candidate_end
+            break
+    
+    # Se não encontrou fim explícito, limitar a um tamanho razoável (ex: 500 caracteres)
+    if end_pos == len(text):
+        end_pos = min(start_pos + 500, len(text))
+    
+    # Extrair seção
+    section_text = text[start_pos:end_pos]
+    
+    return section_text
+
+
 def extract_pdf_pages(pdf_path):
     """Extrai texto de cada página do PDF"""
     pages = {}
@@ -61,81 +127,132 @@ def extract_pdf_pages(pdf_path):
                 cleaned = re.sub(r'\s+', ' ', cleaned).strip().upper()
                 return cleaned
 
+            # Extrair seção específica "Dados da Conta Creditada"
+            credited_section = extract_credited_account_section(text)
+            
             pages[i] = {
                 'text': text,
                 'numbers': normalize_account(text),
-                'norm_text': normalize_search_text(text)
+                'norm_text': normalize_search_text(text),
+                # Novos campos para busca na seção específica
+                'credited_section': credited_section,
+                'credited_numbers': normalize_account(credited_section),
+                'credited_norm_text': normalize_search_text(credited_section)
             }
     return pages
 
 
-def find_account_pages(conta, nome, pages):
-    """Busca páginas onde TANTO a conta QUANTO o nome aparecem juntos"""
+def find_account_pages(conta, agencia, pages, debug_log=None):
+    """
+    Busca páginas onde TANTO a conta QUANTO a agência aparecem juntos NA SEÇÃO 'DADOS DA CONTA CREDITADA'.
+    Se não encontrar, tenta com os valores invertidos (conta<->agência) caso estejam trocados na planilha.
+    Retorna tupla: (lista_de_páginas, invertido) onde invertido=True se usou valores trocados.
+    """
     found = []
     conta_norm = normalize_account(conta)
-    conta_original = str(conta).strip()
-    # Normalizar nome para busca (remover acentos e pontuação)
-    def normalize_search_text(s):
-        if not s:
-            return ""
-        nf = unicodedata.normalize('NFKD', str(s))
-        ascii_s = nf.encode('ascii', 'ignore').decode('ascii')
-        cleaned = re.sub(r'[^A-Za-z0-9\s]', ' ', ascii_s)
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip().upper()
-        return cleaned
-
-    nome_norm = normalize_search_text(nome) if nome else ""
+    agencia_norm = normalize_account(agencia)
     
     if not conta_norm or len(conta_norm) < 3:
-        return found
+        return found, False
     
-    if not nome_norm:
-        return found
+    if not agencia_norm or len(agencia_norm) < 3:
+        return found, False
     
-    # Para cada página, verifica se tem TANTO a conta QUANTO o nome
-    for num, data in pages.items():
-        text_upper = data['text'].upper()
-        text_norm = data.get('norm_text', '')
-        tem_conta = False
-        tem_nome = False
+    # Função auxiliar para buscar número exato com delimitadores
+    def find_exact_number(number, text):
+        """
+        Busca número exato no texto, garantindo que não é parte de outro número.
+        O número deve ser exatamente igual ao que está na planilha.
+        """
+        if not number or not text:
+            return False
         
-        # Verifica se tem a conta (busca 1: conta numérica normalizada no conjunto de dígitos)
-        if conta_norm and conta_norm in data['numbers']:
-            tem_conta = True
-        else:
-            # Tentar encontrar os dígitos da conta no texto permitindo separadores (ex: 12345-6 ou 12 345 6)
-            if conta_norm:
-                pattern = "\\D*".join(list(conta_norm))
-                try:
-                    if re.search(pattern, data['text'] or '', flags=re.DOTALL):
-                        tem_conta = True
-                except re.error:
-                    pass
-        # Busca alternativa: sem dígito verificador (último recurso)
-        if not tem_conta and len(conta_norm) > 4:
-            conta_sem_dv = conta_norm[:-1]
-            if len(conta_sem_dv) >= 4 and conta_sem_dv in data['numbers']:
+        # Criar padrão que permite separadores entre dígitos mas exige delimitadores nas bordas
+        digits = list(number)
+        # Padrão: início ou não-dígito, depois os dígitos (com possíveis separadores), depois fim ou não-dígito  
+        # (?:[\s\-\.]*\d)? permite um dígito verificador opcional no final
+        pattern = r'(?<!\d)' + r'[\s\-\.]*'.join(digits) + r'(?:[\s\-\.]*\d)?(?!\d)'
+        try:
+            if re.search(pattern, text):
+                return True
+        except re.error:
+            pass
+        return False
+    
+    def buscar_com_valores(val_conta, val_agencia):
+        """Busca páginas com os valores de conta e agência fornecidos"""
+        resultados = []
+        debug_info = []  # Para debug
+        
+        for num, data in pages.items():
+            # Usar dados da seção "Dados da Conta Creditada" (se existir)
+            credited_section = data.get('credited_section', '')
+            
+            # Se não encontrou a seção, pular esta página
+            if not credited_section or len(credited_section) < 20:
+                continue
+            
+            tem_conta = False
+            tem_agencia = False
+            
+            # Verifica se tem a conta NA SEÇÃO CREDITADA (busca exata)
+            if val_conta and find_exact_number(val_conta, credited_section):
                 tem_conta = True
+            
+            # Busca alternativa: sem dígito verificador (último recurso)
+            if not tem_conta and len(val_conta) > 4:
+                conta_sem_dv = val_conta[:-1]
+                if len(conta_sem_dv) >= 4 and find_exact_number(conta_sem_dv, credited_section):
+                    tem_conta = True
+            
+            # Verifica se tem a agência NA SEÇÃO CREDITADA (busca exata)
+            if val_agencia and find_exact_number(val_agencia, credited_section):
+                tem_agencia = True
+            
+            # Debug: guardar info de páginas com match parcial
+            if tem_conta or tem_agencia:
+                debug_info.append({
+                    'pagina': num,
+                    'tem_conta': tem_conta,
+                    'tem_agencia': tem_agencia,
+                    'secao_preview': credited_section[:150] if credited_section else ''
+                })
+            
+            # SÓ adiciona se encontrou AMBOS: conta E agência
+            if tem_conta and tem_agencia:
+                if num not in resultados:
+                    resultados.append(num)
         
-        # Verifica se tem o nome (usar texto normalizado sem acentos)
-        if nome_norm and nome_norm in text_norm:
-            tem_nome = True
-        else:
-            # Tenta verificar partes do nome (min 3 caracteres por parte)
-            partes_nome = [p for p in nome_norm.split() if len(p) >= 3]
-            if partes_nome:
-                # exigir pelo menos 2 partes quando o nome possui múltiplas partes, senão 1
-                need = 2 if len(partes_nome) >= 2 else 1
-                matches = sum(1 for parte in partes_nome if parte in text_norm)
-                if matches >= need:
-                    tem_nome = True
+        # Log de debug se callback fornecido
+        if debug_log and not resultados and debug_info:
+            for info in debug_info:
+                debug_log(f"    Pág {info['pagina']+1}: Conta={info['tem_conta']}, Ag={info['tem_agencia']}")
         
-        # SÓ adiciona se encontrou AMBOS: conta E nome
-        if tem_conta and tem_nome:
-            if num not in found:
-                found.append(num)
+        return resultados
     
-    return found
+    # Primeira tentativa: valores originais (conta na coluna conta, agência na coluna agência)
+    if debug_log:
+        debug_log(f"  🔍 Buscando Conta={conta_norm}, Ag={agencia_norm}...")
+    
+    found = buscar_com_valores(conta_norm, agencia_norm)
+    
+    if found:
+        return found, False  # Encontrou com valores originais
+    
+    # Segunda tentativa: valores INVERTIDOS (conta<->agência trocados na planilha)
+    # Só tenta se os valores forem diferentes entre si
+    if conta_norm != agencia_norm:
+        if debug_log:
+            debug_log(f"  🔄 Tentando invertido: Conta={agencia_norm}, Ag={conta_norm}...")
+        
+        found_invertido = buscar_com_valores(agencia_norm, conta_norm)
+        if found_invertido:
+            return found_invertido, True  # Encontrou com valores invertidos
+    
+    if debug_log:
+        debug_log(f"  ❌ Não encontrado")
+    
+    return found, False
 
 
 def create_pdf(pdf_path, page_numbers, output_path):
@@ -264,12 +381,16 @@ class App:
         self.out_var = tk.StringVar(value="comprovantes_extraidos")
         self.df = None
         self.conta_col = None
+        self.agencia_col = None  # Nova coluna de agência
         self.nome_col = None
         self.ccusto_col = None
         self.last_dir = os.path.expanduser("~")
         
         # Option to force reprocess (ignore history)
         self.force_reprocess_var = tk.BooleanVar(value=False)
+        
+        # Debug mode - mostra detalhes de busca
+        self.debug_mode_var = tk.BooleanVar(value=False)
         
         # Timer
         self.start_time = None
@@ -335,8 +456,6 @@ class App:
         # Header
         header = ttk.Label(main, text="Extrator de Comprovantes", style='Header.TLabel')
         header.pack(pady=(6, 12))
-
-        # Files group (grid layout for neat alignment)
         files = ttk.LabelFrame(main, text="📁 Arquivos", padding=12)
         files.pack(fill=tk.X, pady=6)
 
@@ -372,13 +491,18 @@ class App:
         options_frame.pack(fill=tk.X, pady=(6,4))
         
         try:
-            chk = ttk.Checkbutton(options_frame, text="Ignorar histórico (forçar reprocessamento de todos os PDFs)", 
+            chk = ttk.Checkbutton(options_frame, text="Ignorar histórico (forçar reprocessamento)", 
                                  variable=self.force_reprocess_var)
-            chk.pack(side=tk.LEFT, padx=(4,12))
+            chk.pack(side=tk.LEFT, padx=(4,8))
+            
+            chk_debug = ttk.Checkbutton(options_frame, text="🔧 Debug", 
+                                       variable=self.debug_mode_var)
+            chk_debug.pack(side=tk.LEFT, padx=(0,8))
+            
             ttk.Button(options_frame, text="🗑️ Limpar Histórico", 
-                      command=self.clear_processed_history, width=22).pack(side=tk.LEFT, padx=(0,4))
+                      command=self.clear_processed_history, width=18).pack(side=tk.LEFT, padx=(0,4))
             ttk.Button(options_frame, text="🔍 Buscar Não Encontrados", 
-                      command=self.search_missing, width=28).pack(side=tk.LEFT, padx=(4,4))
+                      command=self.search_missing, width=24).pack(side=tk.LEFT, padx=(4,4))
         except Exception:
             # ignore if style/ttk not available
             pass
@@ -532,16 +656,29 @@ class App:
     
     def load_excel(self, path):
         try:
+            # Primeira leitura para detectar colunas
             self.df = pd.read_excel(path)
             cols = list(self.df.columns)
             
             # Auto-detectar colunas (hardcoded)
-            self.conta_col = find_column(self.df, ['conta', 'account'])
+            self.conta_col = find_column(self.df, ['conta', 'account', 'conta corrente'])
+            self.agencia_col = find_column(self.df, ['agencia', 'agência', 'ag', 'agency'])
             self.nome_col = find_column(self.df, ['nome social', 'nome', 'funcionario'])
             self.ccusto_col = find_column(self.df, ['descrição ccusto', 'descricao ccusto', 'descrição de ccusto', 'descricao de ccusto', 'desc ccusto', 'ccusto', 'centro de custo', 'setor'])
             
+            # Reler o Excel forçando conta e agência como TEXTO para preservar zeros à esquerda
+            dtype_dict = {}
+            if self.conta_col:
+                dtype_dict[self.conta_col] = str
+            if self.agencia_col:
+                dtype_dict[self.agencia_col] = str
+            
+            if dtype_dict:
+                self.df = pd.read_excel(path, dtype=dtype_dict)
+                self.write_log(f"ℹ️ Colunas Conta/Agência lidas como TEXTO (preserva zeros à esquerda)")
+            
             self.write_log(f"Colunas: {len(cols)} | Registros: {len(self.df)}")
-            self.write_log(f"✓ Detectadas: Conta={self.conta_col}, Nome={self.nome_col}, CCusto={self.ccusto_col}")
+            self.write_log(f"✓ Detectadas: Conta={self.conta_col}, Agência={self.agencia_col}, Nome={self.nome_col}, CCusto={self.ccusto_col}")
         except Exception as e:
             self.write_log(f"Erro: {e}")
     
@@ -561,28 +698,22 @@ class App:
             messagebox.showerror("Erro", f"Erro ao selecionar pasta: {e}")
     
     def _native_select_folder(self, title):
-        """Seleciona pasta usando o explorador nativo do sistema operacional"""
-        # Usar sempre o diálogo tkinter padrão (funciona bem no Windows)
         folder = filedialog.askdirectory(initialdir=self.last_dir, title=title)
         if folder:
             return normalize_path(folder)
         return None
     
     def _native_select_file(self, title, filetypes):
-        """Seleciona arquivo usando o explorador nativo do sistema operacional"""
-        # Usar sempre o diálogo tkinter padrão (funciona bem no Windows)
         arquivo = filedialog.askopenfilename(initialdir=self.last_dir, title=title, filetypes=filetypes)
         if arquivo:
             return normalize_path(arquivo)
         return None
     
     def validate_pdf_folder(self):
-        """Valida caminho da pasta de PDFs digitada"""
         path = normalize_path(self.pdf_folder_var.get().strip())
         if path and os.path.exists(path) and os.path.isdir(path):
             self.last_dir = path
             try:
-                # Tentar múltiplas abordagens para listar PDFs (útil para OneDrive)
                 pdf_count_listdir = len([f for f in os.listdir(path) if f.lower().endswith('.pdf')])
                 path_obj = Path(path)
                 pdf_count_iterdir = len([f for f in path_obj.iterdir() if f.is_file() and f.suffix.lower() == '.pdf'])
@@ -596,7 +727,6 @@ class App:
             messagebox.showwarning("Aviso", "Pasta não encontrada!")
     
     def validate_excel(self):
-        """Valida caminho do Excel digitado"""
         path = normalize_path(self.excel_var.get().strip())
         if path and os.path.exists(path) and (path.endswith('.xlsx') or path.endswith('.xls')):
             self.last_dir = os.path.dirname(path)
@@ -606,7 +736,6 @@ class App:
             messagebox.showwarning("Aviso", "Arquivo Excel não encontrado!")
     
     def validate_out(self):
-        """Valida pasta de saída"""
         path = self.out_var.get().strip()
         if path:
             self.write_log(f"✓ Pasta: {path}")
@@ -1221,8 +1350,8 @@ class App:
         if self.df is None:
             messagebox.showerror("Erro", "Carregue Excel!")
             return
-        if not self.conta_col or not self.nome_col or not self.ccusto_col:
-            messagebox.showerror("Erro", "Colunas não encontradas no Excel!\nVerifique se existem as colunas: Conta, Nome e Descrição Ccusto")
+        if not self.conta_col or not self.agencia_col or not self.nome_col or not self.ccusto_col:
+            messagebox.showerror("Erro", "Colunas não encontradas no Excel!\nVerifique se existem as colunas: Conta, Agência, Nome e Descrição Ccusto")
             return
         
         self.btn.config(state='disabled')
@@ -1236,6 +1365,7 @@ class App:
             pdf_folder = normalize_path(self.pdf_folder_var.get())
             out_dir = normalize_path(self.out_var.get())
             conta_col = self.conta_col
+            agencia_col = self.agencia_col
             nome_col = self.nome_col
             ccusto_col = self.ccusto_col
             
@@ -1338,21 +1468,35 @@ class App:
             # Primeiro, coletar todas as contas do Excel
             for row_idx, row in self.df.iterrows():
                 conta = row[conta_col]
+                agencia = row[agencia_col]
                 nome = row[nome_col]
                 ccusto = row[ccusto_col]
                 
                 if pd.isna(conta) or str(conta).strip() == '':
                     continue
+                if pd.isna(agencia) or str(agencia).strip() == '':
+                    continue
                 
                 conta_str = str(conta).strip()
+                agencia_str = str(agencia).strip()
                 nome_str = str(nome).strip() if not pd.isna(nome) else 'N/A'
                 ccusto_str = str(ccusto).strip() if not pd.isna(ccusto) else 'N/A'
                 
                 todas_contas.append({
                     'conta': conta_str,
+                    'agencia': agencia_str,
                     'nome': nome_str,
                     'ccusto': ccusto_str
                 })
+            
+            # Log de debug: mostrar algumas contas da planilha para verificação
+            self.write_log(f"\n📋 Total de registros na planilha: {len(todas_contas)}")
+            if todas_contas:
+                self.write_log(f"🔍 Primeiras 5 contas (para verificação):")
+                for i, info in enumerate(todas_contas[:5]):
+                    conta_n = normalize_account(info['conta'])
+                    ag_n = normalize_account(info['agencia'])
+                    self.write_log(f"   {i+1}. Conta={info['conta']}({conta_n}) | Ag={info['agencia']}({ag_n}) | {info['nome'][:30]}")
             
             # Rastrear páginas processadas
             total_paginas_pdfs = 0
@@ -1375,11 +1519,14 @@ class App:
                     
                     for row_idx, row in self.df.iterrows():
                         conta = row[conta_col]
+                        agencia = row[agencia_col]
                         nome = row[nome_col]
                         ccusto = row[ccusto_col]
                         
                         # Verificar se dados estão presentes - TODOS os campos obrigatórios
                         if pd.isna(conta) or str(conta).strip() == '':
+                            continue
+                        if pd.isna(agencia) or str(agencia).strip() == '':
                             continue
                         if pd.isna(nome) or str(nome).strip() == '':
                             continue
@@ -1388,12 +1535,20 @@ class App:
                         
                         # Garantir que as variáveis são sempre recriadas para cada linha
                         conta_str = str(conta).strip()
+                        agencia_str = str(agencia).strip()
                         nome_str = clean_filename(str(nome).strip())
                         ccusto_str = clean_filename(str(ccusto).strip())
                         
-                        paginas = find_account_pages(conta_str, nome, pages)
+                        # Debug callback se modo debug ativado
+                        debug_callback = self.write_log if self.debug_mode_var.get() else None
+                        
+                        paginas, valores_invertidos = find_account_pages(conta_str, agencia_str, pages, debug_log=debug_callback)
                         
                         if paginas:
+                            # Log se os valores estavam invertidos na planilha
+                            if valores_invertidos:
+                                self.write_log(f"⚠️ INVERSÃO DETECTADA: {nome_str} - Conta/Agência trocadas na planilha (Conta={conta_str}, Ag={agencia_str})")
+                            
                             # Registrar quais páginas tiveram match
                             for pag in paginas:
                                 paginas_com_match.add(f"{pdf_name}|{pag}")
@@ -1450,12 +1605,19 @@ class App:
             # Comprovantes nos PDFs que NÃO têm funcionário correspondente na planilha
             nao_encontrados = []
             
-            # Criar índice de contas do Excel para busca rápida
+            # Criar índice de contas+agência do Excel para busca rápida
+            # Chave: "conta_agencia" normalizada
+            # Também criar índice INVERTIDO para detectar inversões
             contas_excel_set = set()
+            contas_excel_invertido_set = set()  # Para detectar inversões
             for conta_info in todas_contas:
                 conta_norm = normalize_account(conta_info['conta'])
-                if conta_norm:
-                    contas_excel_set.add(conta_norm)
+                agencia_norm = normalize_account(conta_info['agencia'])
+                if conta_norm and agencia_norm:
+                    # Usar combinação conta+agência como chave única
+                    contas_excel_set.add(f"{conta_norm}_{agencia_norm}")
+                    # Também adicionar versão invertida para detectar inversões na planilha
+                    contas_excel_invertido_set.add(f"{agencia_norm}_{conta_norm}")
             
             self.write_log(f"\n🔍 Analisando páginas sem match para identificar contas não cadastradas...")
             
@@ -1471,50 +1633,87 @@ class App:
                         if pagina_id in paginas_com_match:
                             continue  # Já foi extraída, pular
                         
-                        text = page_data.get('text', '')
+                        # BUSCAR APENAS NA SEÇÃO "DADOS DA CONTA CREDITADA"
+                        credited_section = page_data.get('credited_section', '')
                         
-                        # Procurar padrões de conta (4-6 dígitos, possivelmente com separador)
-                        acc_pattern = re.compile(r'\b\d{4,6}[-\s]?\d?\b')
-                        contas_encontradas_pagina = acc_pattern.findall(text)
-                        
-                        if not contas_encontradas_pagina:
-                            # Página sem padrão de conta - pode ser página em branco ou cabeçalho
+                        # Se não encontrou a seção, pular esta página
+                        if not credited_section or len(credited_section) < 20:
                             continue
                         
-                        # Pegar a primeira conta mais provável (geralmente a principal da página)
+                        # Buscar especificamente o campo "Conta corrente:" seguido do número
+                        # Padrões possíveis: "Conta corrente: 94894 - 2", "Conta: 12345-6", "C/C: 12345-6"
+                        conta_patterns = [
+                            r'[Cc]onta\s*[Cc]orrente[:\s]+(\d{4,7}[\s\-]*\d?)',  # Conta corrente: 94894 - 2
+                            r'[Cc]/[Cc][:\s]+(\d{4,7}[\s\-]*\d?)',               # C/C: 12345-6
+                            r'[Cc]onta[:\s]+(\d{4,7}[\s\-]*\d?)',                # Conta: 12345-6
+                        ]
+                        
+                        # Buscar agência também
+                        agencia_patterns = [
+                            r'[Aa]g[eê]ncia[:\s]+(\d{3,5})',  # Agência: 6677
+                            r'[Aa]g[:\s]+(\d{3,5})',          # Ag: 6677
+                        ]
+                        
                         melhor_conta = None
-                        for conta_raw in contas_encontradas_pagina:
-                            conta_norm = normalize_account(conta_raw)
-                            
-                            # Filtrar contas válidas (4-7 dígitos)
-                            if conta_norm and len(conta_norm) >= 4 and len(conta_norm) <= 7:
-                                melhor_conta = conta_raw
+                        for pattern in conta_patterns:
+                            match = re.search(pattern, credited_section)
+                            if match:
+                                melhor_conta = match.group(1).strip()
                                 break
                         
-                        if not melhor_conta:
+                        melhor_agencia = None
+                        for pattern in agencia_patterns:
+                            match = re.search(pattern, credited_section)
+                            if match:
+                                melhor_agencia = match.group(1).strip()
+                                break
+                        
+                        # Se não encontrou conta ou agência, pular
+                        if not melhor_conta or not melhor_agencia:
                             continue
                         
+                        # Normalizar conta e agência encontradas
                         conta_norm = normalize_account(melhor_conta)
+                        agencia_norm = normalize_account(melhor_agencia)
                         
-                        # Verificar se a conta NÃO está na planilha
-                        if conta_norm not in contas_excel_set:
-                            # Extrair um trecho do texto ao redor
-                            pos = text.find(melhor_conta)
+                        # Filtrar contas válidas (5-7 dígitos após normalização - contas geralmente têm 5+ dígitos)
+                        if not conta_norm or len(conta_norm) < 5 or len(conta_norm) > 7:
+                            continue
+                        
+                        # Filtrar agências válidas (3-5 dígitos)
+                        if not agencia_norm or len(agencia_norm) < 3 or len(agencia_norm) > 5:
+                            continue
+                        
+                        # Criar chave combinada conta+agência
+                        chave_pdf = f"{conta_norm}_{agencia_norm}"
+                        # Também criar chave invertida (caso na planilha esteja conta<->agência trocados)
+                        chave_pdf_invertida = f"{agencia_norm}_{conta_norm}"
+                        
+                        # Verificar se a combinação conta+agência NÃO está na planilha
+                        # Considera tanto a ordem normal quanto a invertida
+                        esta_cadastrado = (chave_pdf in contas_excel_set or 
+                                          chave_pdf_invertida in contas_excel_set)
+                        
+                        if not esta_cadastrado:
+                            # Extrair um trecho do texto ao redor DA SEÇÃO CREDITADA
+                            pos = credited_section.find(melhor_conta)
                             if pos != -1:
                                 start = max(0, pos - 80)
-                                end = min(len(text), pos + 150)
-                                snippet = text[start:end].replace('\n', ' ')
+                                end = min(len(credited_section), pos + 150)
+                                snippet = credited_section[start:end].replace('\n', ' ')
                                 snippet = ' '.join(snippet.split())
                                 if len(snippet) > 200:
                                     snippet = snippet[:200] + "..."
                             else:
-                                snippet = ' '.join(text.split())[:200] + "..."
+                                snippet = ' '.join(credited_section.split())[:200] + "..."
                             
                             nao_encontrados.append({
                                 'pdf': pdf_name,
                                 'pagina': page_num + 1,
                                 'conta': melhor_conta,
+                                'agencia': melhor_agencia,
                                 'conta_normalizada': conta_norm,
+                                'agencia_normalizada': agencia_norm,
                                 'trecho': snippet
                             })
                 
@@ -1543,7 +1742,8 @@ class App:
                             f.write(f"{idx}. PDF: {item['pdf']}\n")
                             f.write(f"   Página: {item['pagina']}\n")
                             f.write(f"   Conta encontrada: {item['conta']}\n")
-                            f.write(f"   Status: Conta NÃO cadastrada na planilha\n")
+                            f.write(f"   Agência encontrada: {item.get('agencia', 'N/A')}\n")
+                            f.write(f"   Status: Conta+Agência NÃO cadastrada na planilha\n")
                             f.write("-"*80 + "\n\n")
                         
                         f.write("\n" + "="*80 + "\n")
@@ -1566,7 +1766,7 @@ class App:
             self.write_log(f"📄 Total de páginas/comprovantes: {total_paginas_pdfs}")
             self.write_log(f"")
             self.write_log(f"✓ Comprovantes extraídos (com match): {total_ok} páginas")
-            self.write_log(f"✗ Comprovantes SEM funcionário cadastrado: {len(nao_encontrados)} páginas")
+            self.write_log(f"✗ Comprovantes SEM cadastro: {len(nao_encontrados)} páginas")
             self.write_log(f"❓ Outras páginas: {total_paginas_pdfs - total_ok - len(nao_encontrados)}")
             self.write_log(f"")
             if nao_encontrados:
@@ -1578,18 +1778,23 @@ class App:
             
             # Mensagem de conclusão
             outras = total_paginas_pdfs - total_ok - len(nao_encontrados)
-            
-            msg_resultado += f"📄 Total de páginas: {total_paginas_pdfs}"
-            msg_resultado += f"✓ Extraídos: {total_ok}"
-            msg_resultado += f"✗ Sem funcionário: {len(nao_encontrados)}"
+
+            # Garantir que a variável esteja inicializada antes de concatenar
+            msg_resultado = ""
+            msg_resultado += f"📄 Total de páginas: {total_paginas_pdfs}\n"
+            msg_resultado += f"✓ Extraídos: {total_ok}\n"
+            msg_resultado += f"✗ Sem funcionário: {len(nao_encontrados)}\n"
             if outras > 0:
-                msg_resultado += f"❓ Outras: {outras}"
+                msg_resultado += f"❓ Outras: {outras}\n"
             if nao_encontrados:
-                msg_resultado += f"📄 Ver relatório TXT"
+                msg_resultado += f"📄 Ver relatório TXT\n"
             msg_resultado += f"⏱️ {time_str}"
-            
-            self.root.after(0, lambda: self.status_var.set(f"{total_ok}/{total_paginas_pdfs} extraídos"))
-            self.root.after(0, lambda: messagebox.showinfo("Concluído", msg_resultado))
+
+            # Capturar as strings agora (evita capturar variáveis de escopo que podem não existir quando o lambda for executado)
+            status_text = f"{total_ok}/{total_paginas_pdfs} extraídos"
+            final_message = msg_resultado
+            self.root.after(0, lambda s=status_text: self.status_var.set(s))
+            self.root.after(0, lambda m=final_message: messagebox.showinfo("Concluído", m))
 
             
         except Exception as e:
@@ -1597,7 +1802,9 @@ class App:
             self.write_log(f"\n❌ ERRO: {e}")
             import traceback
             traceback.print_exc()
-            self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
+            # Capturar a mensagem de erro em variável local para o lambda
+            err_msg = str(e)
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Erro", m))
         finally:
             # Limpar cache de PDFs para liberar memória
             if hasattr(self, '_pdf_cache'):

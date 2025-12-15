@@ -1,0 +1,52 @@
+name: Build Windows executable
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    name: Build on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install pandas PyPDF2 pdfplumber pyinstaller openpyxl xlrd; fi
+
+      - name: Build exe with PyInstaller
+        shell: bash
+        run: |
+          # Use onefile + windowed (no console) - adjust flags if you want console output
+          pyinstaller --noconfirm --onefile --windowed --name get_proof get_proof.py
+
+      - name: List dist
+        run: dir dist || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: get_proof-windows
+          path: |
+            dist/get_proof.exe
+            dist/get_proof.zip
+
+      - name: ZIP dist (fallback)
+        if: failure() || always()
+        shell: bash
+        run: |
+          # Ensure artifact exists even if exe is not available by zipping the dist folder
+          if [ -d dist ]; then zip -r dist.zip dist || true; fi

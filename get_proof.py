@@ -1545,15 +1545,6 @@ class App:
                     'ccusto': ccusto_str
                 })
             
-            # Log de debug: mostrar algumas contas da planilha para verificação
-            self.write_log(f"\n📋 Total de registros na planilha: {len(todas_contas)}")
-            if todas_contas:
-                self.write_log(f"🔍 Primeiras 5 contas (para verificação):")
-                for i, info in enumerate(todas_contas[:5]):
-                    conta_n = normalize_account(info['conta'])
-                    ag_n = normalize_account(info['agencia'])
-                    self.write_log(f"   {i+1}. Conta={info['conta']}({conta_n}) | Ag={info['agencia']}({ag_n}) | {info['nome'][:30]}")
-            
             # Rastrear páginas processadas
             total_paginas_pdfs = 0
             paginas_com_match = set()  # páginas que tiveram match (PDF + número da página)
@@ -1678,7 +1669,7 @@ class App:
                             'nome': pdf_name,
                             'data': time.strftime('%d/%m/%Y %H:%M:%S'),
                             'extraidos': ok,
-                            'nao_encontrados': nok
+                            'nao_encontrados': nok,
                         }
                         self.save_processed_pdfs()
                     
@@ -1693,11 +1684,6 @@ class App:
             
             # Calcular quantas páginas dos PDFs ficaram SEM match com a planilha
             paginas_sem_match = total_paginas_pdfs - len(paginas_com_match)
-            
-            self.write_log(f"\n📊 ESTATÍSTICAS DE PÁGINAS:")
-            self.write_log(f"   Total de páginas nos PDFs: {total_paginas_pdfs}")
-            self.write_log(f"   Páginas COM match (extraídas): {len(paginas_com_match)}")
-            self.write_log(f"   Páginas SEM match na planilha: {paginas_sem_match}")
             
             # Parar timer e calcular tempo total
             elapsed = self.stop_timer()

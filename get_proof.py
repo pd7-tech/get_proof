@@ -142,10 +142,11 @@ def extract_pdf_pages(pdf_path):
     return pages
 
 
-def find_account_pages(conta, agencia, pages, debug_log=None):
+def find_account_pages(conta, agencia, pages):
     """
     Busca páginas onde TANTO a conta QUANTO a agência aparecem juntos NA SEÇÃO 'DADOS DA CONTA CREDITADA'.
     Se não encontrar, tenta com os valores invertidos (conta<->agência) caso estejam trocados na planilha.
+    Como último recurso, faz busca ampla procurando qualquer um dos valores.
     Retorna tupla: (lista_de_páginas, invertido) onde invertido=True se usou valores trocados.
     """
     found = []
@@ -182,7 +183,6 @@ def find_account_pages(conta, agencia, pages, debug_log=None):
     def buscar_com_valores(val_conta, val_agencia):
         """Busca páginas com os valores de conta e agência fornecidos"""
         resultados = []
-        debug_info = []  # Para debug
         
         for num, data in pages.items():
             # Usar dados da seção "Dados da Conta Creditada" (se existir)
@@ -209,31 +209,15 @@ def find_account_pages(conta, agencia, pages, debug_log=None):
             if val_agencia and find_exact_number(val_agencia, credited_section):
                 tem_agencia = True
             
-            # Debug: guardar info de páginas com match parcial
-            if tem_conta or tem_agencia:
-                debug_info.append({
-                    'pagina': num,
-                    'tem_conta': tem_conta,
-                    'tem_agencia': tem_agencia,
-                    'secao_preview': credited_section[:150] if credited_section else ''
-                })
-            
             # SÓ adiciona se encontrou AMBOS: conta E agência
-            if tem_conta and tem_agencia:
+            # Adiciona se encontrou ao menos a conta (agência é opcional)
+            if tem_conta:
                 if num not in resultados:
                     resultados.append(num)
-        
-        # Log de debug se callback fornecido
-        if debug_log and not resultados and debug_info:
-            for info in debug_info:
-                debug_log(f"    Pág {info['pagina']+1}: Conta={info['tem_conta']}, Ag={info['tem_agencia']}")
         
         return resultados
     
     # Primeira tentativa: valores originais (conta na coluna conta, agência na coluna agência)
-    if debug_log:
-        debug_log(f"  🔍 Buscando Conta={conta_norm}, Ag={agencia_norm}...")
-    
     found = buscar_com_valores(conta_norm, agencia_norm)
     
     if found:
@@ -242,15 +226,47 @@ def find_account_pages(conta, agencia, pages, debug_log=None):
     # Segunda tentativa: valores INVERTIDOS (conta<->agência trocados na planilha)
     # Só tenta se os valores forem diferentes entre si
     if conta_norm != agencia_norm:
-        if debug_log:
-            debug_log(f"  🔄 Tentando invertido: Conta={agencia_norm}, Ag={conta_norm}...")
-        
         found_invertido = buscar_com_valores(agencia_norm, conta_norm)
         if found_invertido:
             return found_invertido, True  # Encontrou com valores invertidos
     
-    if debug_log:
-        debug_log(f"  ❌ Não encontrado")
+    # Terceira tentativa: BUSCA TEXTUAL AMPLA (qualquer um dos valores em qualquer lugar)
+    # Para casos onde os dados estão em colunas erradas ou em branco
+    found_ampla = []
+    for num, data in pages.items():
+        credited_section = data.get('credited_section', '')
+        
+        if not credited_section or len(credited_section) < 20:
+            continue
+        
+        # Buscar QUALQUER UM dos valores (conta OU agência) em QUALQUER LUGAR da seção
+        encontrou_algum = False
+        
+        # Tentar encontrar conta
+        if conta_norm and find_exact_number(conta_norm, credited_section):
+            encontrou_algum = True
+        
+        # Tentar encontrar agência
+        if not encontrou_algum and agencia_norm and find_exact_number(agencia_norm, credited_section):
+            encontrou_algum = True
+        
+        # Busca sem dígito verificador (último recurso)
+        if not encontrou_algum:
+            if len(conta_norm) > 4:
+                conta_sem_dv = conta_norm[:-1]
+                if len(conta_sem_dv) >= 4 and find_exact_number(conta_sem_dv, credited_section):
+                    encontrou_algum = True
+            
+            if not encontrou_algum and len(agencia_norm) > 4:
+                agencia_sem_dv = agencia_norm[:-1]
+                if len(agencia_sem_dv) >= 4 and find_exact_number(agencia_sem_dv, credited_section):
+                    encontrou_algum = True
+        
+        if encontrou_algum and num not in found_ampla:
+            found_ampla.append(num)
+    
+    if found_ampla:
+        return found_ampla, False  # Encontrou com busca ampla
     
     return found, False
 
@@ -1472,13 +1488,53 @@ class App:
                 nome = row[nome_col]
                 ccusto = row[ccusto_col]
                 
-                if pd.isna(conta) or str(conta).strip() == '':
+                # Campos obrigatórios
+                if pd.isna(nome) or str(nome).strip() == '':
                     continue
-                if pd.isna(agencia) or str(agencia).strip() == '':
+                if pd.isna(ccusto) or str(ccusto).strip() == '':
                     continue
                 
-                conta_str = str(conta).strip()
-                agencia_str = str(agencia).strip()
+                # Para conta e agência, buscar em TODAS as colunas se estiverem vazias
+                conta_str = str(conta).strip() if not pd.isna(conta) and str(conta).strip() != '' else None
+                agencia_str = str(agencia).strip() if not pd.isna(agencia) and str(agencia).strip() != '' else None
+                
+                # Se conta ou agência estão vazias, procurar em OUTRAS COLUNAS
+                valores_encontrados = []
+                if not conta_str or not agencia_str:
+                    # Percorrer todas as colunas buscando valores numéricos
+                    for col_name in row.index:
+                        if col_name in [nome_col, ccusto_col]:  # Pular colunas de texto
+                            continue
+                        
+                        valor = row[col_name]
+                        if pd.isna(valor):
+                            continue
+                        
+                        valor_str = str(valor).strip()
+                        # Verificar se é um valor numérico válido (pode ter hífen para DV)
+                        if valor_str and re.match(r'^[\d\-\.]+$', valor_str):
+                            valor_norm = normalize_account(valor_str)
+                            if valor_norm and len(valor_norm) >= 3:
+                                valores_encontrados.append(valor_str)
+                    
+                    # Se encontrou valores, usar os primeiros 2
+                    if len(valores_encontrados) >= 2:
+                        if not conta_str:
+                            conta_str = valores_encontrados[0]
+                        if not agencia_str:
+                            agencia_str = valores_encontrados[1] if len(valores_encontrados) > 1 else valores_encontrados[0]
+                    elif len(valores_encontrados) == 1:
+                        # Só tem 1 valor, usar como conta
+                        if not conta_str:
+                            conta_str = valores_encontrados[0]
+                        if not agencia_str:
+                            # Tentar usar o mesmo valor como agência (pode estar duplicado)
+                            agencia_str = valores_encontrados[0]
+                
+                # Se ainda não tem conta E agência, pular este registro
+                if not conta_str or not agencia_str:
+                    continue
+                
                 nome_str = str(nome).strip() if not pd.isna(nome) else 'N/A'
                 ccusto_str = str(ccusto).strip() if not pd.isna(ccusto) else 'N/A'
                 
@@ -1501,6 +1557,7 @@ class App:
             # Rastrear páginas processadas
             total_paginas_pdfs = 0
             paginas_com_match = set()  # páginas que tiveram match (PDF + número da página)
+            paginas_ja_extraidas = set()  # Controle de páginas já extraídas (evita duplicatas)
             
             for idx, (pdf_name, pdf_path, fingerprint) in enumerate(novos_pdfs, 1):
                 self.write_log(f"\n{'='*50}")
@@ -1523,39 +1580,83 @@ class App:
                         nome = row[nome_col]
                         ccusto = row[ccusto_col]
                         
-                        # Verificar se dados estão presentes - TODOS os campos obrigatórios
-                        if pd.isna(conta) or str(conta).strip() == '':
-                            continue
-                        if pd.isna(agencia) or str(agencia).strip() == '':
-                            continue
+                        # Verificar campos obrigatórios (nome e ccusto são essenciais)
                         if pd.isna(nome) or str(nome).strip() == '':
                             continue
                         if pd.isna(ccusto) or str(ccusto).strip() == '':
                             continue
                         
-                        # Garantir que as variáveis são sempre recriadas para cada linha
-                        conta_str = str(conta).strip()
-                        agencia_str = str(agencia).strip()
+                        # Para conta e agência, buscar em TODAS as colunas se estiverem vazias
+                        conta_str = str(conta).strip() if not pd.isna(conta) and str(conta).strip() != '' else None
+                        agencia_str = str(agencia).strip() if not pd.isna(agencia) and str(agencia).strip() != '' else None
+                        
+                        # Se conta ou agência estão vazias, procurar em OUTRAS COLUNAS
+                        valores_encontrados = []
+                        busca_alternativa = False
+                        if not conta_str or not agencia_str:
+                            busca_alternativa = True
+                            # Percorrer todas as colunas buscando valores numéricos
+                            for col_name in row.index:
+                                if col_name in [nome_col, ccusto_col]:  # Pular colunas de texto
+                                    continue
+                                
+                                valor = row[col_name]
+                                if pd.isna(valor):
+                                    continue
+                                
+                                valor_str = str(valor).strip()
+                                # Verificar se é um valor numérico válido (pode ter hífen para DV)
+                                if valor_str and re.match(r'^[\d\-\.]+$', valor_str):
+                                    valor_norm = normalize_account(valor_str)
+                                    if valor_norm and len(valor_norm) >= 3:
+                                        valores_encontrados.append(valor_str)
+                            
+                            # Se encontrou valores, usar os primeiros 2
+                            if len(valores_encontrados) >= 2:
+                                if not conta_str:
+                                    conta_str = valores_encontrados[0]
+                                if not agencia_str:
+                                    agencia_str = valores_encontrados[1] if len(valores_encontrados) > 1 else valores_encontrados[0]
+                            elif len(valores_encontrados) == 1:
+                                # Só tem 1 valor, usar como conta
+                                if not conta_str:
+                                    conta_str = valores_encontrados[0]
+                                if not agencia_str:
+                                    # Tentar usar o mesmo valor como agência (pode estar duplicado)
+                                    agencia_str = valores_encontrados[0]
+                        
+                        # Se ainda não tem conta E agência, pular
+                        if not conta_str or not agencia_str:
+                            continue
+                        
                         nome_str = clean_filename(str(nome).strip())
                         ccusto_str = clean_filename(str(ccusto).strip())
                         
-                        # Debug callback se modo debug ativado
-                        debug_callback = self.write_log if self.debug_mode_var.get() else None
+                        # Log se usou busca alternativa
+                        if busca_alternativa and valores_encontrados:
+                            if self.debug_mode_var.get():
+                                self.write_log(f"  📌 {nome_str}: Valores encontrados em colunas alternativas (Conta={conta_str}, Ag={agencia_str})")
                         
-                        paginas, valores_invertidos = find_account_pages(conta_str, agencia_str, pages, debug_log=debug_callback)
+                        paginas, valores_invertidos = find_account_pages(conta_str, agencia_str, pages)
                         
                         if paginas:
-                            # Log se os valores estavam invertidos na planilha
-                            if valores_invertidos:
-                                self.write_log(f"⚠️ INVERSÃO DETECTADA: {nome_str} - Conta/Agência trocadas na planilha (Conta={conta_str}, Ag={agencia_str})")
+                            # Filtrar apenas páginas que ainda NÃO foram extraídas
+                            paginas_novas = []
+                            for pag in paginas:
+                                chave_pagina = f"{pdf_name}|{pag}"
+                                if chave_pagina not in paginas_ja_extraidas:
+                                    paginas_novas.append(pag)
+                                    paginas_ja_extraidas.add(chave_pagina)
+                                else:
+                                    continue
+
+                            # Se não há páginas novas, pular
+                            if not paginas_novas:
+                                continue
                             
                             # Registrar quais páginas tiveram match
-                            for pag in paginas:
+                            for pag in paginas_novas:
                                 paginas_com_match.add(f"{pdf_name}|{pag}")
-                            
-                            if len(paginas) > 1:
-                                duplicates += 1
-                                self.write_log(f"⚠️ Conta {conta_str} em {len(paginas)} páginas: {[p+1 for p in paginas]}")
                             
                             out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}.pdf")
                             i = 1
@@ -1563,8 +1664,8 @@ class App:
                                 out = os.path.join(out_dir, f"{ccusto_str}_{nome_str}_{i}.pdf")
                                 i += 1
                             
-                            if create_pdf(pdf_path, paginas, out):
-                                self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas]})")
+                            if create_pdf(pdf_path, paginas_novas, out):
+                                self.write_log(f"✓ {ccusto_str}_{nome_str} (pág {[p+1 for p in paginas_novas]})")
                                 ok += 1
                                 # Marcar que esta conta foi encontrada
                                 contas_encontradas.add(conta_str)
@@ -1610,9 +1711,13 @@ class App:
             # Também criar índice INVERTIDO para detectar inversões
             contas_excel_set = set()
             contas_excel_invertido_set = set()  # Para detectar inversões
+            contas_excel_conta_set = set()  # Índice apenas de contas (conta isolada)
             for conta_info in todas_contas:
                 conta_norm = normalize_account(conta_info['conta'])
                 agencia_norm = normalize_account(conta_info['agencia'])
+                # Indexar conta isolada para permitir match apenas por conta
+                if conta_norm:
+                    contas_excel_conta_set.add(conta_norm)
                 if conta_norm and agencia_norm:
                     # Usar combinação conta+agência como chave única
                     contas_excel_set.add(f"{conta_norm}_{agencia_norm}")
@@ -1689,10 +1794,13 @@ class App:
                         # Também criar chave invertida (caso na planilha esteja conta<->agência trocados)
                         chave_pdf_invertida = f"{agencia_norm}_{conta_norm}"
                         
-                        # Verificar se a combinação conta+agência NÃO está na planilha
-                        # Considera tanto a ordem normal quanto a invertida
-                        esta_cadastrado = (chave_pdf in contas_excel_set or 
-                                          chave_pdf_invertida in contas_excel_set)
+                        # Verificar se a combinação conta+agência está na planilha
+                        # Considera: combinação normal, combinação invertida, ou conta isolada
+                        esta_cadastrado = (
+                            chave_pdf in contas_excel_set or 
+                            chave_pdf_invertida in contas_excel_invertido_set or
+                            conta_norm in contas_excel_conta_set
+                        )
                         
                         if not esta_cadastrado:
                             # Extrair um trecho do texto ao redor DA SEÇÃO CREDITADA
@@ -1743,7 +1851,7 @@ class App:
                             f.write(f"   Página: {item['pagina']}\n")
                             f.write(f"   Conta encontrada: {item['conta']}\n")
                             f.write(f"   Agência encontrada: {item.get('agencia', 'N/A')}\n")
-                            f.write(f"   Status: Conta+Agência NÃO cadastrada na planilha\n")
+                            f.write(f"   Status: Conta ou Agência NÃO cadastrada na planilha\n")
                             f.write("-"*80 + "\n\n")
                         
                         f.write("\n" + "="*80 + "\n")

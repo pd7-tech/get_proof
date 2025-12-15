@@ -44,7 +44,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Extrator de PDF
+          name: Extrator de PDF v0.1.0
           path: |
             dist/get_proof.exe
             dist/get_proof.zip

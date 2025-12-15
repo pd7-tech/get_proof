@@ -274,26 +274,28 @@ def find_account_pages(conta, agencia, pages):
 def create_pdf(pdf_path, page_numbers, output_path):
     """Cria PDF com páginas específicas"""
     if not page_numbers:
-        return False
-    
+        return 0
+
     reader = None
     writer = None
-    
+
     try:
         # Abrir o arquivo PDF fonte
         reader = PyPDF2.PdfReader(pdf_path)
-        
+
         # Criar um novo writer para cada arquivo
         writer = PyPDF2.PdfWriter()
-        
+
         # Adicionar apenas as páginas especificadas
+        pages_added = 0
         for num in page_numbers:
-            if num < len(reader.pages):
+            if 0 <= num < len(reader.pages):
                 page = reader.pages[num]
                 writer.add_page(page)
-        
+                pages_added += 1
+
         # Verificar se há páginas e salvar
-        if len(writer.pages) > 0:
+        if pages_added > 0:
             # Garantir que NÃO sobrescrevemos arquivos já existentes
             target = output_path
             if os.path.exists(target):
@@ -314,19 +316,22 @@ def create_pdf(pdf_path, page_numbers, output_path):
                     writer.write(out)
             except Exception as e:
                 print(f"Erro ao salvar PDF {target}: {e}")
-                return False
+                return 0
 
-            return True
-            
+            # Retornar número de páginas efetivamente escritas
+            return pages_added
+
+        # Nenhuma página válida para escrever
+        return 0
+
     except Exception as e:
         print(f"Erro criar PDF: {e}")
-        return False
+        return 0
+
     finally:
         # Limpar referências
         writer = None
         reader = None
-    
-    return False
 
 
 def normalize_path(path):
@@ -921,26 +926,85 @@ class App:
         try:
             with open(txt_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
-            
-            current_item = {}
-            for line in lines:
-                line = line.strip()
-                if line.startswith("Conta:"):
-                    if current_item:
-                        items.append(current_item)
-                    current_item = {'conta': line.split("Conta:", 1)[1].strip()}
-                elif line.startswith("Nome:"):
-                    current_item['nome'] = line.split("Nome:", 1)[1].strip()
-                elif line.startswith("Centro de Custo:"):
-                    current_item['ccusto'] = line.split("Centro de Custo:", 1)[1].strip()
-            
-            if current_item:
-                items.append(current_item)
-                
+
+            current = None
+            for raw in lines:
+                line = raw.strip()
+                if not line:
+                    continue
+
+                # New block starts with pattern like: '1. PDF: filename.pdf'
+                m = re.match(r'^\s*\d+\.\s*PDF:\s*(.+)$', line, re.IGNORECASE)
+                if m:
+                    if current:
+                        # Ensure keys exist
+                        current.setdefault('conta', 'N/A')
+                        current.setdefault('nome', 'N/A')
+                        current.setdefault('ccusto', 'N/A')
+                        items.append(current)
+                    current = {'pdf': m.group(1).strip(), 'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    continue
+
+                # If the file was produced by the older format (Conta:, Nome:, Centro de Custo:)
+                if line.startswith('Conta:'):
+                    if not current:
+                        current = {'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    current['conta'] = line.split('Conta:', 1)[1].strip()
+                    continue
+                if line.startswith('Nome:'):
+                    if not current:
+                        current = {'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    current['nome'] = line.split('Nome:', 1)[1].strip()
+                    continue
+                if line.startswith('Centro de Custo:'):
+                    if not current:
+                        current = {'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    current['ccusto'] = line.split('Centro de Custo:', 1)[1].strip()
+                    continue
+
+                # Parse the report format produced by this tool: 'Conta encontrada:' and 'Agência encontrada:'
+                if line.lower().startswith('conta encontrada:'):
+                    if not current:
+                        current = {'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    current['conta'] = line.split(':', 1)[1].strip()
+                    continue
+                if line.lower().startswith('agência encontrada:') or line.lower().startswith('agencia encontrada:'):
+                    # We don't use agência here for the assisted search input, but keep it in case
+                    if not current:
+                        current = {'conta': 'N/A', 'nome': 'N/A', 'ccusto': 'N/A'}
+                    # store as agencia (not used for search input)
+                    current.setdefault('agencia', line.split(':', 1)[1].strip())
+                    continue
+
+                # Also accept lines like 'Página:' (ignored for search but could be stored)
+                if line.startswith('Página:') or line.startswith('Pagina:'):
+                    if current:
+                        try:
+                            current['pagina'] = int(line.split(':', 1)[1].strip())
+                        except Exception:
+                            current['pagina'] = line.split(':', 1)[1].strip()
+                    continue
+
+            # Append the last item
+            if current:
+                current.setdefault('conta', 'N/A')
+                current.setdefault('nome', 'N/A')
+                current.setdefault('ccusto', 'N/A')
+                items.append(current)
+
         except Exception as e:
             self.write_log(f"❌ Erro ao ler arquivo: {e}")
-        
-        return items
+
+        # Normalize to expected keys for open_search_window: conta, nome, ccusto
+        normalized = []
+        for it in items:
+            normalized.append({
+                'conta': it.get('conta', 'N/A'),
+                'nome': it.get('nome', 'N/A'),
+                'ccusto': it.get('ccusto', 'N/A')
+            })
+
+        return normalized
     
     def open_search_window(self, missing_items):
         """Abre janela interativa para buscar e confirmar comprovantes"""
@@ -1016,20 +1080,21 @@ class App:
         current_results = {'matches': [], 'selected_item': None}
         
         def search_selected():
-            """Busca o item selecionado nos PDFs"""
+            """Busca o item selecionado nos PDFs (roda em thread para não travar a UI)"""
             selection = tree.selection()
             if not selection:
                 messagebox.showwarning("Aviso", "Selecione um item para buscar!")
                 return
-            
+
             item_id = selection[0]
             values = tree.item(item_id)['values']
             conta = values[0]
             nome = values[1]
             ccusto = values[2]
-            
+
             current_results['selected_item'] = {'conta': conta, 'nome': nome, 'ccusto': ccusto}
-            
+
+            # Preparar UI antes de rodar a busca
             status_var.set(f"Buscando: {nome}...")
             results_text.config(state='normal')
             results_text.delete(1.0, tk.END)
@@ -1039,32 +1104,49 @@ class App:
             results_text.insert(tk.END, f"  C.Custo: {ccusto}\n")
             results_text.insert(tk.END, f"\n{'='*50}\n\n")
             results_text.config(state='disabled')
-            search_win.update()
-            
-            # Buscar nos PDFs com critérios flexíveis
-            matches = self.flexible_search(conta, nome, ccusto)
-            current_results['matches'] = matches
-            
-            # Mostrar resultados
-            results_text.config(state='normal')
-            if matches:
-                results_text.insert(tk.END, f"✓ Encontrados {len(matches)} possíveis matches:\n\n")
-                for i, match in enumerate(matches, 1):
-                    results_text.insert(tk.END, f"{i}. PDF: {match['pdf']}\n")
-                    results_text.insert(tk.END, f"   Página: {match['page'] + 1}\n")
-                    results_text.insert(tk.END, f"   Critério: {match['criteria']}\n")
-                    results_text.insert(tk.END, f"   Trecho:\n")
-                    results_text.insert(tk.END, f"   {match['snippet']}\n")
-                    results_text.insert(tk.END, f"\n{'-'*50}\n\n")
-                status_var.set(f"Encontrados {len(matches)} possíveis matches - Revise e confirme")
-            else:
-                results_text.insert(tk.END, "❌ Nenhum match encontrado mesmo com busca flexível.\n")
-                results_text.insert(tk.END, "\nDicas:\n")
-                results_text.insert(tk.END, "• Verifique se o nome está correto\n")
-                results_text.insert(tk.END, "• Verifique se a conta está correta\n")
-                results_text.insert(tk.END, "• Verifique se o comprovante está no PDF\n")
-                status_var.set("Nenhum match encontrado")
-            results_text.config(state='disabled')
+
+            def worker():
+                try:
+                    matches = self.flexible_search(conta, nome, ccusto)
+                except Exception as e:
+                    matches = []
+                    err = e
+                else:
+                    err = None
+
+                def finish_ui():
+                    # Atualizar resultados na thread principal
+                    current_results['matches'] = matches
+                    results_text.config(state='normal')
+                    results_text.delete(1.0, tk.END)
+                    if err:
+                        results_text.insert(tk.END, f"❌ Erro durante a busca: {err}\n")
+                        status_var.set("Erro na busca")
+                    elif matches:
+                        results_text.insert(tk.END, f"✓ Encontrados {len(matches)} possíveis matches:\n\n")
+                        for i, match in enumerate(matches, 1):
+                            results_text.insert(tk.END, f"{i}. PDF: {match['pdf']}\n")
+                            results_text.insert(tk.END, f"   Página: {match['page'] + 1}\n")
+                            results_text.insert(tk.END, f"   Critério: {match.get('criteria','?')}\n")
+                            results_text.insert(tk.END, f"   Trecho:\n")
+                            results_text.insert(tk.END, f"   {match.get('snippet','')}\n")
+                            results_text.insert(tk.END, f"\n{'-'*50}\n\n")
+                        status_var.set(f"Encontrados {len(matches)} possíveis matches - Revise e confirme")
+                    else:
+                        results_text.insert(tk.END, "❌ Nenhum match encontrado mesmo com busca flexível.\n\n")
+                        results_text.insert(tk.END, "Dicas:\n")
+                        results_text.insert(tk.END, "• Verifique se o nome está correto\n")
+                        results_text.insert(tk.END, "• Verifique se a conta está correta\n")
+                        results_text.insert(tk.END, "• Verifique se o comprovante está no PDF\n")
+                        status_var.set("Nenhum match encontrado")
+
+                    results_text.config(state='disabled')
+
+                # Agendar atualização da UI
+                self.root.after(0, finish_ui)
+
+            # Rodar busca em thread separada para não travar a interface
+            threading.Thread(target=worker, daemon=True).start()
         
         def extract_selected():
             """Extrai os matches selecionados"""
@@ -1102,8 +1184,10 @@ class App:
                     out_path = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_str}_manual_{i}.pdf")
                     i += 1
                 
-                if create_pdf(pdf_path, [match['page']], out_path):
-                    success_count += 1
+                pages_written = create_pdf(pdf_path, [match['page']], out_path)
+                if pages_written and pages_written > 0:
+                    # Somar pelo número de páginas extraídas (normalmente 1 neste fluxo manual)
+                    success_count += pages_written
                     self.write_log(f"✓ Extraído manualmente: {ccusto_str}/{ccusto_str}_{nome_str}_manual (pág {match['page'] + 1})")
             
             messagebox.showinfo("Sucesso", f"{success_count} comprovante(s) extraído(s) com sucesso!")
@@ -1634,7 +1718,7 @@ class App:
                                 self.write_log(f"  📌 {nome_str}: Valores encontrados em colunas alternativas (Conta={conta_str}, Ag={agencia_str})")
                         
                         paginas, valores_invertidos = find_account_pages(conta_str, agencia_str, pages)
-                        
+
                         if paginas:
                             # Filtrar apenas páginas que ainda NÃO foram extraídas
                             paginas_novas = []
@@ -1642,32 +1726,35 @@ class App:
                                 chave_pagina = f"{pdf_name}|{pag}"
                                 if chave_pagina not in paginas_ja_extraidas:
                                     paginas_novas.append(pag)
-                                    paginas_ja_extraidas.add(chave_pagina)
                                 else:
                                     continue
 
                             # Se não há páginas novas, pular
                             if not paginas_novas:
                                 continue
-                            
-                            # Registrar quais páginas tiveram match
-                            for pag in paginas_novas:
-                                paginas_com_match.add(f"{pdf_name}|{pag}")
-                            
+
                             # Criar subpasta para o centro de custo
                             ccusto_folder = os.path.join(out_dir, ccusto_str)
                             Path(ccusto_folder).mkdir(parents=True, exist_ok=True)
-                            
+
                             # Salvar PDF na pasta do centro de custo (mantém prefixo de ccusto no nome)
                             out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_str}.pdf")
                             i = 1
                             while os.path.exists(out):
                                 out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_str}_{i}.pdf")
                                 i += 1
-                            
-                            if create_pdf(pdf_path, paginas_novas, out):
+
+                            # Tentar criar o PDF com as páginas novas e obter quantas páginas foram gravadas
+                            pages_written = create_pdf(pdf_path, paginas_novas, out)
+                            if pages_written and pages_written > 0:
+                                # Registrar quais páginas tiveram match (apenas após gravação bem-sucedida)
+                                for pag in paginas_novas:
+                                    paginas_com_match.add(f"{pdf_name}|{pag}")
+                                    paginas_ja_extraidas.add(f"{pdf_name}|{pag}")
+
                                 self.write_log(f"✓ {ccusto_str}/{ccusto_str}_{nome_str} (pág {[p+1 for p in paginas_novas]})")
-                                ok += 1
+                                # Incrementar por número de páginas efetivamente escritas
+                                ok += int(pages_written)
                                 # Marcar que esta conta foi encontrada
                                 contas_encontradas.add(conta_str)
                             else:

@@ -446,6 +446,40 @@ class App:
         
         # Logo image
         self.logo_image = None
+        self.logo_label = None
+        
+        # Theme management
+        self.current_theme = 'light'  # 'light' or 'dark'
+        self.themes = {
+            'light': {
+                'primary_blue': '#00D4FF',
+                'dark_blue': '#0099CC',
+                'accent_blue': '#0AEAFF',
+                'white': '#F8F8F8',
+                'light_gray': '#F5F5F5',
+                'medium_gray': '#E0E0E0',
+                'dark_gray': '#424242',
+                'text_dark': '#212121',
+                'success': '#4CAF50',
+                'warning': '#FF9800',
+                'error': '#F44336',
+                'logo_file': 'pd7lab-dark.jpeg'
+            },
+            'dark': {
+                'primary_blue': '#00D4FF',
+                'dark_blue': '#0099CC',
+                'accent_blue': '#0AEAFF',
+                'white': '#1E1E1E',          # Dark background
+                'light_gray': '#2D2D2D',     # Slightly lighter dark
+                'medium_gray': '#404040',    # Medium dark gray
+                'dark_gray': '#B0B0B0',      # Light gray for text on dark
+                'text_dark': '#E0E0E0',      # Light text on dark background
+                'success': '#4CAF50',
+                'warning': '#FF9800',
+                'error': '#F44336',
+                'logo_file': 'pd7.png'
+            }
+        }
         
         # Histórico de PDFs processados
         self.processed_pdfs_file = "pdfs_processados.json"
@@ -478,6 +512,30 @@ class App:
             return f"{os.path.basename(pdf_path)}_{stat.st_size}_{stat.st_mtime}"
         except:
             return None
+    
+    def toggle_theme(self):
+        """Alterna entre tema claro e escuro"""
+        # Alternar tema
+        self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
+        
+        # Aplicar cores do novo tema
+        theme_colors = self.themes[self.current_theme]
+        self.colors = theme_colors.copy()
+        
+        # Recriar a UI com o novo tema
+        # Limpar widgets existentes
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        
+        # Reconfigurar background da janela
+        self.root.configure(bg=self.colors['white'])
+        
+        # Recriar UI
+        self.setup_ui()
+        
+        # Log da mudança
+        theme_name = 'Escuro' if self.current_theme == 'dark' else 'Claro'
+        self.write_log(f"🎨 Tema alterado para: {theme_name}")
     
     def setup_ui(self):
         # Apply PD7Lab themed style
@@ -572,7 +630,8 @@ class App:
         # Try to load and display logo
         try:
             if Image and ImageTk:
-                logo_path = os.path.join(os.path.dirname(__file__), 'pd7lab-dark.jpeg')
+                logo_filename = self.themes[self.current_theme]['logo_file']
+                logo_path = os.path.join(os.path.dirname(__file__), logo_filename)
                 if os.path.exists(logo_path):
                     logo_img = Image.open(logo_path)
                     # Resize logo to fit header (height ~60px)
@@ -582,8 +641,8 @@ class App:
                     logo_img = logo_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     self.logo_image = ImageTk.PhotoImage(logo_img)
                     
-                    logo_label = ttk.Label(header_frame, image=self.logo_image, background=self.colors['white'])
-                    logo_label.pack(side=tk.LEFT, padx=(0, 15))
+                    self.logo_label = ttk.Label(header_frame, image=self.logo_image, background=self.colors['white'])
+                    self.logo_label.pack(side=tk.LEFT, padx=(0, 15))
         except Exception as e:
             print(f"Logo loading warning: {e}")
             pass
@@ -600,6 +659,19 @@ class App:
                            font=('Segoe UI', 9, 'italic'),
                            foreground=self.colors['dark_gray'])
         subtitle.pack(anchor=tk.W)
+        
+        # Theme toggle button on the right side of header
+        theme_btn_frame = ttk.Frame(header_frame)
+        theme_btn_frame.pack(side=tk.RIGHT, padx=(10, 0))
+        
+        theme_icon = "🌙" if self.current_theme == 'light' else "☀️"
+        theme_text = "Modo Escuro" if self.current_theme == 'light' else "Modo Claro"
+        
+        self.theme_btn = ttk.Button(theme_btn_frame, 
+                                    text=f"{theme_icon} {theme_text}", 
+                                    command=self.toggle_theme,
+                                    width=15)
+        self.theme_btn.pack()
         
         # Separator line
         separator = tk.Frame(main, height=2, bg=self.colors['primary_blue'])

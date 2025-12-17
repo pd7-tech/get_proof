@@ -51,5 +51,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='pd7.png',                 # Ícone do executável
+    icon='pd7-escudo.ico',                 # Ícone do executável
 )

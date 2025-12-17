@@ -7,6 +7,7 @@ block_cipher = None
 added_files = [
     ('pd7.png', '.'),              # Logo clara (tema light)
     ('pd7lab-dark.jpeg', '.'),     # Logo escura (tema dark)
+    ('pd7-escudo.ico, '.'),        # icone
 ]
 
 a = Analysis(

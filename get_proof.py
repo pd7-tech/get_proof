@@ -80,17 +80,18 @@ class DriveUploadDialog:
         # Criar janela
         self.window = tk.Toplevel(parent)
         self.window.title("📤 Enviar para Google Drive")
-        self.window.geometry("800x700")
         self.window.transient(parent)
         self.window.grab_set()
         
-        # Centralizar na tela
-        self.window.update_idletasks()
-        x = (self.window.winfo_screenwidth() // 2) - (800 // 2)
-        y = (self.window.winfo_screenheight() // 2) - (700 // 2)
-        self.window.geometry(f"+{x}+{y}")
-        
         self.setup_ui()
+        
+        # Configurar tamanho e centralizar APÓS adicionar todo o conteúdo
+        self.window.update_idletasks()
+        self.window.geometry("1600x900")
+        self.window.update_idletasks()
+        x = (self.window.winfo_screenwidth() // 2) - (1600 // 2)
+        y = (self.window.winfo_screenheight() // 2) - (900 // 2)
+        self.window.geometry(f"1600x900+{x}+{y}")
     
     def setup_ui(self):
         # Container principal
@@ -952,6 +953,22 @@ class App:
         self.root.geometry("950x750")
         self.root.minsize(850, 650)
         
+        # Tentar definir ícone da janela
+        try:
+            icon_path = resource_path("pd7-escudo.ico")
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+            else:
+                # Tentar com PNG se ICO não existir
+                icon_png = resource_path("pd7-escudo.ico")
+                if os.path.exists(icon_png):
+                    icon_image = Image.open(icon_png)
+                    icon_photo = ImageTk.PhotoImage(icon_image)
+                    self.root.iconphoto(True, icon_photo)
+        except Exception as e:
+            # Continuar mesmo se não conseguir carregar o ícone
+            pass
+        
         # PD7Lab Color Palette (from logo)
         self.colors = {
             'primary_blue': '#00D4FF',      # Cyan blue from logo
@@ -999,31 +1016,31 @@ class App:
         self.current_theme = 'light'  # 'light' or 'dark'
         self.themes = {
             'light': {
-                'primary_blue': '#00D4FF',
-                'dark_blue': '#0099CC',
-                'accent_blue': '#0AEAFF',
-                'white': '#F8F8F8',
-                'light_gray': '#F5F5F5',
-                'medium_gray': '#E0E0E0',
-                'dark_gray': '#424242',
-                'text_dark': '#212121',
-                'success': '#4CAF50',
-                'warning': '#FF9800',
-                'error': '#F44336',
+                'primary_blue': '#00A8CC',      # Azul mais suave
+                'dark_blue': '#008299',         # Tom mais profundo
+                'accent_blue': '#00C4E6',       # Azul claro mais suave
+                'white': '#F5F5F5',             # Cinza muito claro (não branco puro)
+                'light_gray': '#E8E8E8',        # Cinza claro suave
+                'medium_gray': '#CCCCCC',       # Cinza médio suave
+                'dark_gray': '#5A5A5A',         # Cinza escuro mais suave
+                'text_dark': '#303030',         # Texto cinza escuro (não preto puro)
+                'success': '#43A047',           # Verde mais suave
+                'warning': '#FB8C00',           # Laranja mais suave
+                'error': '#E53935',             # Vermelho mais suave
                 'logo_file': 'pd7lab-dark.jpeg'
             },
             'dark': {
                 'primary_blue': '#00D4FF',
                 'dark_blue': '#0099CC',
                 'accent_blue': '#0AEAFF',
-                'white': '#1E1E1E',          # Dark background
-                'light_gray': '#2D2D2D',     # Slightly lighter dark
-                'medium_gray': '#404040',    # Medium dark gray
-                'dark_gray': '#B0B0B0',      # Light gray for text on dark
-                'text_dark': '#E0E0E0',      # Light text on dark background
-                'success': '#4CAF50',
-                'warning': '#FF9800',
-                'error': '#F44336',
+                'white': '#2B2B2B',          # Cinza escuro suave (não preto puro)
+                'light_gray': '#363636',     # Cinza médio-escuro
+                'medium_gray': '#4A4A4A',    # Cinza médio
+                'dark_gray': '#9E9E9E',      # Cinza claro suave (não muito brilhante)
+                'text_dark': '#D0D0D0',      # Texto cinza claro (não branco puro)
+                'success': '#66BB6A',        # Verde mais suave
+                'warning': '#FFA726',        # Laranja mais suave
+                'error': '#EF5350',          # Vermelho mais suave
                 'logo_file': 'pd7.png'
             }
         }

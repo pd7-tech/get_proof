@@ -665,6 +665,29 @@ def extract_credited_account_section(text):
     return section_text
 
 
+def extract_auth_code(text):
+    """
+    Extrai o código de autenticação do comprovante.
+    Exemplos Itaú: sequência hexadecimal de 32-40 chars após 'Autenticação:'.
+    Retorna a string do código em maiúsculas, ou None se não encontrar.
+    """
+    if not text:
+        return None
+    # Padrão: após 'Autenticação' (com ou sem acento, com ou sem ':'), captura sequência hex longa
+    match = re.search(
+        r'Autentica[çc][aã]o\s*:?\s*([A-Fa-f0-9]{20,})',
+        text,
+        re.IGNORECASE
+    )
+    if match:
+        return match.group(1).upper()
+    # Fallback: qualquer sequência hex isolada com 32+ chars (CTRL codes, etc.)
+    match = re.search(r'(?<![A-Fa-f0-9])([A-Fa-f0-9]{32,})(?![A-Fa-f0-9])', text)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
 def extract_pdf_pages(pdf_path):
     """Extrai texto de cada página do PDF"""
     pages = {}
@@ -684,6 +707,8 @@ def extract_pdf_pages(pdf_path):
 
             # Extrair seção específica "Dados da Conta Creditada"
             credited_section = extract_credited_account_section(text)
+            # Código de autenticação único do comprovante
+            auth_code = extract_auth_code(text)
             
             pages[i] = {
                 'text': text,
@@ -692,9 +717,41 @@ def extract_pdf_pages(pdf_path):
                 # Novos campos para busca na seção específica
                 'credited_section': credited_section,
                 'credited_numbers': normalize_account(credited_section),
-                'credited_norm_text': normalize_search_text(credited_section)
+                'credited_norm_text': normalize_search_text(credited_section),
+                # Código de autenticação para deduplicação
+                'auth_code': auth_code
             }
     return pages
+
+
+def extract_name_from_page(page_data):
+    """
+    Extrai o nome do beneficiário/creditado diretamente do texto da página do PDF.
+    Busca o campo 'Nome:' dentro da seção 'Dados da Conta Creditada'.
+    Retorna o nome encontrado (str) ou None se não encontrar.
+    """
+    text = page_data.get('credited_section', '') or page_data.get('text', '')
+    if not text:
+        return None
+
+    # Padrões para capturar o nome após 'Nome:' (e variantes)
+    patterns = [
+        r'Nome\s*:\s*([A-ZÀ-Ú][A-ZÀ-Úa-zà-ú\s\.\-]{2,80}?)(?:\n|Agência|Ag[\.\:]|Conta|CPF|CNPJ|$)',
+        r'Nome\s*:\s*(.+?)(?:\n|Agência|Ag[\.\:]|Conta|CPF|CNPJ)',
+        r'Nome\s*:\s*(.+)',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            nome = match.group(1).strip()
+            # Filtrar resultados muito curtos ou que sejam apenas dígitos
+            if nome and len(nome) >= 3 and not nome.isdigit():
+                # Remover traços, pontos e espaços duplicados finais
+                nome = re.sub(r'\s+', ' ', nome).strip()
+                return nome
+
+    return None
 
 
 def find_account_pages(conta, agencia, pages):
@@ -2675,6 +2732,7 @@ class App:
             total_paginas_pdfs = 0
             paginas_com_match = set()  # páginas que tiveram match (PDF + número da página)
             paginas_ja_extraidas = set()  # Controle de páginas já extraídas (evita duplicatas)
+            autenticacoes_ja_extraidas = set()  # Controle por código de autenticação (deduplicação robusta)
             
             for idx, (pdf_name, pdf_path, fingerprint) in enumerate(novos_pdfs, 1):
                 self.write_log(f"\n{'='*50}")
@@ -2758,13 +2816,18 @@ class App:
 
                         if paginas:
                             # Filtrar apenas páginas que ainda NÃO foram extraídas
+                            # Usa código de autenticação como chave primária (mais confiável que número de página)
                             paginas_novas = []
                             for pag in paginas:
                                 chave_pagina = f"{pdf_name}|{pag}"
-                                if chave_pagina not in paginas_ja_extraidas:
-                                    paginas_novas.append(pag)
-                                else:
+                                auth = pages[pag].get('auth_code')
+                                # Já extraído por autenticação?
+                                if auth and auth in autenticacoes_ja_extraidas:
                                     continue
+                                # Já extraído por página (fallback para páginas sem auth code)?
+                                if chave_pagina in paginas_ja_extraidas:
+                                    continue
+                                paginas_novas.append(pag)
 
                             # Se não há páginas novas, pular
                             if not paginas_novas:
@@ -2774,11 +2837,26 @@ class App:
                             ccusto_folder = os.path.join(out_dir, ccusto_str)
                             Path(ccusto_folder).mkdir(parents=True, exist_ok=True)
 
+                            # Tentar extrair o nome diretamente do conteúdo do PDF (primeira página com match)
+                            nome_no_pdf = None
+                            for pag in paginas_novas:
+                                nome_no_pdf = extract_name_from_page(pages[pag])
+                                if nome_no_pdf:
+                                    break
+
+                            # Usar nome do PDF se encontrado; caso contrário, usar nome da planilha
+                            if nome_no_pdf:
+                                nome_final = clean_filename(nome_no_pdf)
+                                if self.debug_mode_var.get():
+                                    self.write_log(f"  📝 Nome extraído do PDF: '{nome_no_pdf}' (planilha: '{nome_str}')")
+                            else:
+                                nome_final = nome_str
+
                             # Salvar PDF na pasta do centro de custo (mantém prefixo de ccusto no nome)
-                            out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_str}.pdf")
+                            out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_final}.pdf")
                             i = 1
                             while os.path.exists(out):
-                                out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_str}_{i}.pdf")
+                                out = os.path.join(ccusto_folder, f"{ccusto_str}_{nome_final}_{i}.pdf")
                                 i += 1
 
                             # Tentar criar o PDF com as páginas novas e obter quantas páginas foram gravadas
@@ -2788,8 +2866,11 @@ class App:
                                 for pag in paginas_novas:
                                     paginas_com_match.add(f"{pdf_name}|{pag}")
                                     paginas_ja_extraidas.add(f"{pdf_name}|{pag}")
+                                    auth = pages[pag].get('auth_code')
+                                    if auth:
+                                        autenticacoes_ja_extraidas.add(auth)
 
-                                self.write_log(f"✓ {ccusto_str}/{ccusto_str}_{nome_str} (pág {[p+1 for p in paginas_novas]})")
+                                self.write_log(f"✓ {ccusto_str}/{ccusto_str}_{nome_final} (pág {[p+1 for p in paginas_novas]})")
                                 # Incrementar por número de páginas efetivamente escritas
                                 ok += int(pages_written)
                                 # Marcar que esta conta foi encontrada

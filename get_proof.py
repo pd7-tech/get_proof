@@ -2945,6 +2945,14 @@ class App:
 
 
 if __name__ == "__main__":
-    root = ctk.CTk()
-    App(root)
+    try:
+        root = ctk.CTk()
+        App(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        log_path = os.path.join(os.path.expanduser("~"), "pd7lab_error.txt")
+        with open(log_path, "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        raise
     root.mainloop()

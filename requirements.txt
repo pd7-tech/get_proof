@@ -4,4 +4,6 @@ xlrd
 PyPDF2
 pdfplumber
 Pillow
+customtkinter
+darkdetect
 pyinstaller

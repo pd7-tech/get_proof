@@ -19,7 +19,7 @@ call venv\Scripts\activate.bat
 REM Instalar dependências
 echo Instalando dependencias...
 pip install --upgrade pip
-pip install pandas openpyxl xlrd PyPDF2 pdfplumber Pillow pyinstaller
+pip install pandas openpyxl xlrd PyPDF2 pdfplumber Pillow customtkinter darkdetect pyinstaller
 
 REM Criar executável
 echo Compilando executavel...

@@ -28,7 +28,7 @@ jobs:
           if (Test-Path 'requirements.txt') {
             pip install -r requirements.txt
           } else {
-            pip install pyinstaller pandas openpyxl xlrd pdfplumber PyPDF2 Pillow
+            pip install pyinstaller pandas openpyxl xlrd pdfplumber PyPDF2 Pillow customtkinter darkdetect
           }
         shell: powershell
 

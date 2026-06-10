@@ -30,18 +30,23 @@ except ImportError:
     import pdfplumber
 
 try:
+    import customtkinter as ctk
     import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    from tkinter import ttk, filedialog, messagebox
     from PIL import Image, ImageTk
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
 except ImportError:
     try:
+        import customtkinter as ctk
         import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox, scrolledtext
-        # PIL not available, will work without logo
+        from tkinter import ttk, filedialog, messagebox
         Image = None
         ImageTk = None
+        ctk.set_appearance_mode("System")
+        ctk.set_default_color_theme("blue")
     except ImportError:
-        print("Erro: tkinter não instalado")
+        print("Erro: customtkinter não instalado. Execute: pip install customtkinter")
         sys.exit(1)
 
 
@@ -69,158 +74,119 @@ def resource_path(relative_path):
 
 class DriveUploadDialog:
     """Janela de revisão e configuração antes do upload"""
-    
+
     def __init__(self, parent, app, source_folder, file_summary):
         self.parent = parent
         self.app = app
         self.source_folder = source_folder
         self.file_summary = file_summary
         self.result = None
-        
-        # Criar janela
-        self.window = tk.Toplevel(parent)
-        self.window.title("📤 Enviar para Google Drive")
+
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Enviar para Google Drive")
         self.window.transient(parent)
         self.window.grab_set()
-        
+        self.window.geometry("1200x800")
+        self.window.update_idletasks()
+        x = (self.window.winfo_screenwidth() // 2) - 600
+        y = (self.window.winfo_screenheight() // 2) - 400
+        self.window.geometry(f"+{x}+{y}")
+
         self.setup_ui()
-        
-        # Configurar tamanho e centralizar APÓS adicionar todo o conteúdo
-        self.window.update_idletasks()
-        self.window.geometry("1600x900")
-        self.window.update_idletasks()
-        x = (self.window.winfo_screenwidth() // 2) - (1600 // 2)
-        y = (self.window.winfo_screenheight() // 2) - (900 // 2)
-        self.window.geometry(f"1600x900+{x}+{y}")
-    
+
     def setup_ui(self):
-        # Container principal
-        main = ttk.Frame(self.window, padding=20)
-        main.pack(fill=tk.BOTH, expand=True)
-        
-        # CABEÇALHO
-        header_frame = ttk.Frame(main)
-        header_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        ttk.Label(header_frame, 
-                 text="📤 Enviar Comprovantes para Google Drive",
-                 font=('Segoe UI', 16, 'bold'),
-                 foreground=self.app.colors['primary_blue']).pack()
-        
-        ttk.Label(header_frame,
-                 text="Revise os arquivos e selecione o destino antes de enviar",
-                 font=('Segoe UI', 10),
-                 foreground=self.app.colors['dark_gray']).pack()
-        
-        # RESUMO
-        summary_frame = ttk.LabelFrame(main, text="📊 Resumo", padding=15)
-        summary_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        info_text = f"""📁 Pasta origem: {os.path.basename(self.source_folder)}
-📄 Total de arquivos: {self.file_summary['total_files']}
-📂 Centros de custo: {self.file_summary['total_folders']}
-💾 Tamanho total: {self.app.format_size(self.file_summary['total_size'])}"""
-        
-        ttk.Label(summary_frame, text=info_text, justify=tk.LEFT).pack(anchor=tk.W)
-        
-        # LISTA DE PASTAS
-        list_frame = ttk.LabelFrame(main, text="📋 Arquivos por Centro de Custo", padding=15)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-        
-        # TreeView
-        tree_container = ttk.Frame(list_frame)
-        tree_container.pack(fill=tk.BOTH, expand=True)
-        
-        tree = ttk.Treeview(tree_container, 
-                           columns=('files', 'size'),
-                           show='tree headings',
-                           selectmode='none')
-        
+        ACCENT = "#00A8CC"
+        main = ctk.CTkFrame(self.window, fg_color="transparent")
+        main.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # Cabeçalho
+        ctk.CTkLabel(main, text="📤 Enviar Comprovantes para Google Drive",
+                     font=("Segoe UI", 16, "bold"), text_color=ACCENT).pack(pady=(0, 5))
+        ctk.CTkLabel(main, text="Revise os arquivos e selecione o destino antes de enviar",
+                     font=("Segoe UI", 10)).pack(pady=(0, 15))
+
+        # Resumo
+        summary_frame = ctk.CTkFrame(main, corner_radius=8)
+        summary_frame.pack(fill=tk.X, pady=(0, 12))
+        ctk.CTkLabel(summary_frame, text="📊 Resumo",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 5))
+        info_text = (f"📁 Pasta origem: {os.path.basename(self.source_folder)}\n"
+                     f"📄 Total de arquivos: {self.file_summary['total_files']}\n"
+                     f"📂 Centros de custo: {self.file_summary['total_folders']}\n"
+                     f"💾 Tamanho total: {self.app.format_size(self.file_summary['total_size'])}")
+        ctk.CTkLabel(summary_frame, text=info_text, justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=(0, 10))
+
+        # Lista de pastas (Treeview - sem equivalente no CTk)
+        list_frame = ctk.CTkFrame(main, corner_radius=8)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        ctk.CTkLabel(list_frame, text="📋 Arquivos por Centro de Custo",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 5))
+
+        tree_container = ctk.CTkFrame(list_frame, fg_color="transparent")
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        tree = ttk.Treeview(tree_container, columns=('files', 'size'), show='tree headings', selectmode='none')
         tree.heading('#0', text='Centro de Custo')
         tree.heading('files', text='Arquivos')
         tree.heading('size', text='Tamanho')
-        
         tree.column('#0', width=400)
         tree.column('files', width=100, anchor=tk.CENTER)
         tree.column('size', width=150, anchor=tk.CENTER)
-        
-        # Scrollbar
         scrollbar = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # Popular tree
         for ccusto, data in sorted(self.file_summary['folders'].items()):
-            tree.insert('', 'end', 
-                       text=f"✓ {ccusto}",
-                       values=(data['count'], self.app.format_size(data['size'])))
-        
-        # DESTINO
-        dest_frame = ttk.LabelFrame(main, text="🎯 Destino no Google Drive", padding=15)
-        dest_frame.pack(fill=tk.X, pady=(0, 15))
-        
+            tree.insert('', 'end', text=f"✓ {ccusto}",
+                        values=(data['count'], self.app.format_size(data['size'])))
+
+        # Destino
+        dest_frame = ctk.CTkFrame(main, corner_radius=8)
+        dest_frame.pack(fill=tk.X, pady=(0, 12))
+        ctk.CTkLabel(dest_frame, text="🎯 Destino no Google Drive",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 5))
+
         self.drive_path = tk.StringVar()
-        
-        # Tentar detectar Google Drive
         detected = self.app.detect_google_drive_folder()
         if detected:
             self.drive_path.set(detected)
-            ttk.Label(dest_frame, 
-                     text=f"✓ Google Drive detectado automaticamente",
-                     foreground=self.app.colors['success'],
-                     font=('Segoe UI', 9)).pack(anchor=tk.W, pady=(0, 5))
-        
-        path_frame = ttk.Frame(dest_frame)
-        path_frame.pack(fill=tk.X)
-        
-        ttk.Label(path_frame, text="Pasta:").pack(side=tk.LEFT, padx=(0, 10))
-        
-        entry = ttk.Entry(path_frame, 
-                         textvariable=self.drive_path,
-                         font=('Segoe UI', 10))
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        
-        ttk.Button(path_frame,
-                  text="📁 Procurar...",
-                  command=self.select_drive_folder).pack(side=tk.LEFT)
-        
-        # OPÇÕES
-        options_frame = ttk.LabelFrame(main, text="⚙️ Opções", padding=15)
-        options_frame.pack(fill=tk.X, pady=(0, 15))
-        
+            ctk.CTkLabel(dest_frame, text="✓ Google Drive detectado automaticamente",
+                         text_color="#4CAF50", font=("Segoe UI", 9)).pack(anchor=tk.W, padx=15, pady=(0, 5))
+
+        path_frame = ctk.CTkFrame(dest_frame, fg_color="transparent")
+        path_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+        ctk.CTkLabel(path_frame, text="Pasta:").pack(side=tk.LEFT, padx=(0, 10))
+        ctk.CTkEntry(path_frame, textvariable=self.drive_path, font=("Segoe UI", 10)).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        ctk.CTkButton(path_frame, text="📁 Procurar...", command=self.select_drive_folder,
+                      width=120, fg_color=ACCENT, hover_color="#0088AA").pack(side=tk.LEFT)
+
+        # Opções
+        options_frame = ctk.CTkFrame(main, corner_radius=8)
+        options_frame.pack(fill=tk.X, pady=(0, 12))
+        ctk.CTkLabel(options_frame, text="⚙️ Opções",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 5))
+
         self.keep_local = tk.BooleanVar(value=True)
         self.create_backup = tk.BooleanVar(value=False)
         self.open_after = tk.BooleanVar(value=True)
-        
-        ttk.Checkbutton(options_frame,
-                       text="✓ Manter cópia local após upload",
-                       variable=self.keep_local).pack(anchor=tk.W, pady=2)
-        
-        ttk.Checkbutton(options_frame,
-                       text="✓ Criar backup antes de enviar (.zip)",
-                       variable=self.create_backup).pack(anchor=tk.W, pady=2)
-        
-        ttk.Checkbutton(options_frame,
-                       text="✓ Abrir pasta do Drive após conclusão",
-                       variable=self.open_after).pack(anchor=tk.W, pady=2)
-        
-        # BOTÕES
-        button_frame = ttk.Frame(main)
+
+        opts_inner = ctk.CTkFrame(options_frame, fg_color="transparent")
+        opts_inner.pack(anchor=tk.W, padx=15, pady=(0, 10))
+        ctk.CTkCheckBox(opts_inner, text="Manter cópia local após upload", variable=self.keep_local).pack(anchor=tk.W, pady=2)
+        ctk.CTkCheckBox(opts_inner, text="Criar backup antes de enviar (.zip)", variable=self.create_backup).pack(anchor=tk.W, pady=2)
+        ctk.CTkCheckBox(opts_inner, text="Abrir pasta do Drive após conclusão", variable=self.open_after).pack(anchor=tk.W, pady=2)
+
+        # Botões
+        button_frame = ctk.CTkFrame(main, fg_color="transparent")
         button_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        ttk.Button(button_frame,
-                  text="❌ Cancelar",
-                  command=self.window.destroy).pack(side=tk.LEFT)
-        
-        ttk.Button(button_frame,
-                  text="📂 Abrir Pasta Local",
-                  command=self.open_local_folder).pack(side=tk.LEFT, padx=(10, 0))
-        
-        ttk.Button(button_frame,
-                  text="📤 Enviar para Drive",
-                  style='Accent.TButton',
-                  command=self.start_upload).pack(side=tk.RIGHT)
+        ctk.CTkButton(button_frame, text="❌ Cancelar", command=self.window.destroy,
+                      fg_color="gray40", hover_color="gray30", width=120).pack(side=tk.LEFT)
+        ctk.CTkButton(button_frame, text="📂 Abrir Pasta Local", command=self.open_local_folder,
+                      fg_color="gray40", hover_color="gray30", width=150).pack(side=tk.LEFT, padx=(10, 0))
+        ctk.CTkButton(button_frame, text="📤 Enviar para Drive", command=self.start_upload,
+                      fg_color=ACCENT, hover_color="#0088AA", width=160,
+                      font=("Segoe UI", 11, "bold")).pack(side=tk.RIGHT)
     
     def select_drive_folder(self):
         """Seleciona pasta do Google Drive"""
@@ -304,139 +270,103 @@ class DriveUploadDialog:
 
 class UploadProgressDialog:
     """Janela de progresso durante upload"""
-    
+
     def __init__(self, parent, app):
         self.parent = parent
         self.app = app
         self.cancelled = False
         self.paused = False
-        
-        # Criar janela
-        self.window = tk.Toplevel(parent)
-        self.window.title("📤 Enviando para Google Drive...")
-        self.window.geometry("650x350")
+
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title("Enviando para Google Drive...")
+        self.window.geometry("650x380")
         self.window.transient(parent)
         self.window.grab_set()
         self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
-        # Centralizar
         self.window.update_idletasks()
-        x = (self.window.winfo_screenwidth() // 2) - (650 // 2)
-        y = (self.window.winfo_screenheight() // 2) - (350 // 2)
+        x = (self.window.winfo_screenwidth() // 2) - 325
+        y = (self.window.winfo_screenheight() // 2) - 190
         self.window.geometry(f"+{x}+{y}")
-        
+
         self.setup_ui()
-    
+
     def setup_ui(self):
-        main = ttk.Frame(self.window, padding=30)
-        main.pack(fill=tk.BOTH, expand=True)
-        
-        # Título
-        ttk.Label(main,
-                 text="📤 Enviando arquivos para Google Drive",
-                 font=('Segoe UI', 14, 'bold'),
-                 foreground=self.app.colors['primary_blue']).pack(pady=(0, 20))
-        
-        # Status
-        self.status_label = ttk.Label(main,
-                                     text="Preparando upload...",
-                                     font=('Segoe UI', 11))
+        ACCENT = "#00A8CC"
+        main = ctk.CTkFrame(self.window, fg_color="transparent")
+        main.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
+
+        ctk.CTkLabel(main, text="📤 Enviando arquivos para Google Drive",
+                     font=("Segoe UI", 14, "bold"), text_color=ACCENT).pack(pady=(0, 20))
+
+        self.status_label = ctk.CTkLabel(main, text="Preparando upload...", font=("Segoe UI", 11))
         self.status_label.pack(pady=(0, 15))
-        
-        # Barra de progresso
-        self.progress = ttk.Progressbar(main,
-                                       length=550,
-                                       mode='determinate')
-        self.progress.pack(pady=(0, 10))
-        
-        # Porcentagem
-        self.percent_label = ttk.Label(main,
-                                      text="0%",
-                                      font=('Segoe UI', 10, 'bold'),
-                                      foreground=self.app.colors['primary_blue'])
+
+        self.progress = ctk.CTkProgressBar(main, width=550, height=18, mode='determinate')
+        self.progress.pack(pady=(0, 8))
+        self.progress.set(0)
+
+        self.percent_label = ctk.CTkLabel(main, text="0%",
+                                          font=("Segoe UI", 10, "bold"), text_color=ACCENT)
         self.percent_label.pack()
-        
-        # Arquivo atual
-        self.current_file = ttk.Label(main,
-                                     text="",
-                                     font=('Segoe UI', 9),
-                                     foreground=self.app.colors['dark_gray'])
+
+        self.current_file = ctk.CTkLabel(main, text="", font=("Segoe UI", 9), text_color="gray")
         self.current_file.pack(pady=(15, 5))
-        
-        # Estatísticas
-        self.stats_label = ttk.Label(main,
-                                    text="0 / 0 arquivos • 0 MB / 0 MB",
-                                    font=('Segoe UI', 9))
+
+        self.stats_label = ctk.CTkLabel(main, text="0 / 0 arquivos • 0 MB / 0 MB", font=("Segoe UI", 9))
         self.stats_label.pack(pady=(0, 5))
-        
-        # Tempo estimado
-        self.time_label = ttk.Label(main,
-                                   text="Calculando tempo restante...",
-                                   font=('Segoe UI', 9),
-                                   foreground=self.app.colors['dark_gray'])
+
+        self.time_label = ctk.CTkLabel(main, text="Calculando tempo restante...",
+                                       font=("Segoe UI", 9), text_color="gray")
         self.time_label.pack()
-        
-        # Botões
-        button_frame = ttk.Frame(main)
+
+        button_frame = ctk.CTkFrame(main, fg_color="transparent")
         button_frame.pack(pady=(25, 0))
-        
-        self.cancel_btn = ttk.Button(button_frame,
-                                    text="❌ Cancelar",
-                                    command=self.cancel)
+
+        self.cancel_btn = ctk.CTkButton(button_frame, text="❌ Cancelar", command=self.cancel,
+                                        fg_color="gray40", hover_color="gray30", width=120)
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
     
     def update_progress(self, current, total, current_file, bytes_sent, bytes_total, elapsed_time):
         """Atualiza o progresso do upload"""
         if self.cancelled:
             return False
-        
+
         try:
-            # Porcentagem
-            percent = (current / total) * 100 if total > 0 else 0
-            self.progress['value'] = percent
-            self.percent_label.config(text=f"{percent:.1f}%")
-            
-            # Status
-            self.status_label.config(text=f"Enviando arquivo {current} de {total}...")
-            
-            # Arquivo atual
-            self.current_file.config(text=f"📄 {os.path.basename(current_file)}")
-            
-            # Estatísticas
+            percent = (current / total) if total > 0 else 0
+            self.progress.set(percent)
+            self.percent_label.configure(text=f"{percent*100:.1f}%")
+            self.status_label.configure(text=f"Enviando arquivo {current} de {total}...")
+            self.current_file.configure(text=f"📄 {os.path.basename(current_file)}")
+
             mb_sent = bytes_sent / (1024 * 1024)
             mb_total = bytes_total / (1024 * 1024)
-            self.stats_label.config(
+            self.stats_label.configure(
                 text=f"{current} / {total} arquivos • {mb_sent:.1f} MB / {mb_total:.1f} MB")
-            
-            # Tempo restante
+
             if current > 0 and elapsed_time > 0:
-                avg_time_per_file = elapsed_time / current
-                remaining_files = total - current
-                remaining_time = avg_time_per_file * remaining_files
-                
+                remaining_time = (elapsed_time / current) * (total - current)
                 if remaining_time < 60:
                     time_str = f"~{int(remaining_time)}s restantes"
                 elif remaining_time < 3600:
                     time_str = f"~{int(remaining_time / 60)}m restantes"
                 else:
                     time_str = f"~{int(remaining_time / 3600)}h restantes"
-                
-                self.time_label.config(text=time_str)
-            
+                self.time_label.configure(text=time_str)
+
             self.window.update()
             return True
-            
+
         except Exception as e:
             print(f"Erro ao atualizar progresso: {e}")
             return True
-    
+
     def cancel(self):
         """Cancela o upload"""
-        if messagebox.askyesno("Cancelar Upload", 
-                              "Tem certeza que deseja cancelar o upload?\n\nArquivos já enviados permanecerão no Drive."):
+        if messagebox.askyesno("Cancelar Upload",
+                               "Tem certeza que deseja cancelar o upload?\n\nArquivos já enviados permanecerão no Drive."):
             self.cancelled = True
-            self.status_label.config(text="❌ Cancelando...")
-            self.cancel_btn.config(state='disabled')
+            self.status_label.configure(text="❌ Cancelando...")
+            self.cancel_btn.configure(state='disabled')
     
     def on_closing(self):
         """Intercepta fechamento da janela"""
@@ -452,97 +382,70 @@ class UploadProgressDialog:
 
 class UploadCompleteDialog:
     """Relatório final após upload"""
-    
+
     def __init__(self, parent, app, results):
         self.parent = parent
         self.app = app
         self.results = results
-        
-        # Criar janela
-        self.window = tk.Toplevel(parent)
-        self.window.title("✅ Upload Concluído" if results['success'] > 0 else "⚠️ Upload com Problemas")
+
+        title = "Upload Concluído" if results['success'] > 0 else "Upload com Problemas"
+        self.window = ctk.CTkToplevel(parent)
+        self.window.title(title)
         self.window.geometry("700x600")
         self.window.transient(parent)
-        
-        # Centralizar
         self.window.update_idletasks()
-        x = (self.window.winfo_screenwidth() // 2) - (700 // 2)
-        y = (self.window.winfo_screenheight() // 2) - (600 // 2)
+        x = (self.window.winfo_screenwidth() // 2) - 350
+        y = (self.window.winfo_screenheight() // 2) - 300
         self.window.geometry(f"+{x}+{y}")
-        
+
         self.setup_ui()
-    
+
     def setup_ui(self):
-        main = ttk.Frame(self.window, padding=30)
-        main.pack(fill=tk.BOTH, expand=True)
-        
-        # Ícone e título
-        header = ttk.Frame(main)
-        header.pack(pady=(0, 20))
-        
+        ACCENT = "#00A8CC"
+        main = ctk.CTkFrame(self.window, fg_color="transparent")
+        main.pack(fill=tk.BOTH, expand=True, padx=30, pady=30)
+
         if self.results['errors'] == 0:
-            icon_text = "✅"
-            title_text = "Upload Concluído com Sucesso!"
-            color = self.app.colors['success']
+            icon_text, title_text, color = "✅", "Upload Concluído com Sucesso!", "#4CAF50"
         else:
-            icon_text = "⚠️"
-            title_text = "Upload Concluído com Avisos"
-            color = self.app.colors['warning']
-        
-        ttk.Label(header,
-                 text=icon_text,
-                 font=('Segoe UI', 48)).pack()
-        
-        ttk.Label(header,
-                 text=title_text,
-                 font=('Segoe UI', 16, 'bold'),
-                 foreground=color).pack()
-        
-        # Estatísticas
-        stats_frame = ttk.LabelFrame(main, text="📊 Estatísticas", padding=20)
+            icon_text, title_text, color = "⚠️", "Upload Concluído com Avisos", "#FF9800"
+
+        ctk.CTkLabel(main, text=icon_text, font=("Segoe UI", 48)).pack()
+        ctk.CTkLabel(main, text=title_text, font=("Segoe UI", 16, "bold"), text_color=color).pack(pady=(0, 20))
+
+        stats_frame = ctk.CTkFrame(main, corner_radius=8)
         stats_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        stats_text = f"""✓ {self.results['success']} arquivo(s) enviado(s) com sucesso
-✗ {self.results['errors']} erro(s)
-⏱️ Tempo total: {self.results['duration']}
-💾 Dados transferidos: {self.results['size_mb']} MB
-🔗 Destino: {os.path.basename(self.results['drive_url'])}"""
-        
-        ttk.Label(stats_frame, text=stats_text, justify=tk.LEFT).pack(anchor=tk.W)
-        
-        # Erros (se houver)
+        ctk.CTkLabel(stats_frame, text="📊 Estatísticas",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 5))
+        stats_text = (f"✓ {self.results['success']} arquivo(s) enviado(s) com sucesso\n"
+                      f"✗ {self.results['errors']} erro(s)\n"
+                      f"⏱️ Tempo total: {self.results['duration']}\n"
+                      f"💾 Dados transferidos: {self.results['size_mb']} MB\n"
+                      f"🔗 Destino: {os.path.basename(self.results['drive_url'])}")
+        ctk.CTkLabel(stats_frame, text=stats_text, justify=tk.LEFT).pack(anchor=tk.W, padx=15, pady=(0, 10))
+
         if self.results['errors'] > 0 and self.results.get('error_list'):
-            error_frame = ttk.LabelFrame(main, text="⚠️ Arquivos com Erro", padding=15)
+            error_frame = ctk.CTkFrame(main, corner_radius=8)
             error_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-            
-            # Lista de erros
-            error_text = scrolledtext.ScrolledText(error_frame, 
-                                                  height=10, 
-                                                  font=('Consolas', 9))
-            error_text.pack(fill=tk.BOTH, expand=True)
-            
+            ctk.CTkLabel(error_frame, text="⚠️ Arquivos com Erro",
+                         font=("Segoe UI", 10, "bold"), text_color="#FF9800").pack(anchor=tk.W, padx=15, pady=(10, 5))
+            error_text = ctk.CTkTextbox(error_frame, height=180, font=("Consolas", 9))
+            error_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
             for idx, error in enumerate(self.results['error_list'], 1):
-                error_text.insert(tk.END, f"{idx}. {os.path.basename(error['file'])}\n")
-                error_text.insert(tk.END, f"   Erro: {error['error']}\n\n")
-            
-            error_text.config(state='disabled')
-        
-        # Ações
-        action_frame = ttk.Frame(main)
+                error_text.insert("end", f"{idx}. {os.path.basename(error['file'])}\n")
+                error_text.insert("end", f"   Erro: {error['error']}\n\n")
+            error_text.configure(state='disabled')
+
+        action_frame = ctk.CTkFrame(main, fg_color="transparent")
         action_frame.pack(pady=(10, 0))
-        
-        ttk.Button(action_frame,
-                  text="🔗 Abrir no Drive",
-                  command=lambda: self.open_drive(self.results['drive_url'])).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(action_frame,
-                  text="📄 Salvar Relatório",
-                  command=self.save_report).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(action_frame,
-                  text="✓ Fechar",
-                  style='Accent.TButton',
-                  command=self.window.destroy).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(action_frame, text="🔗 Abrir no Drive",
+                      command=lambda: self.open_drive(self.results['drive_url']),
+                      fg_color="gray40", hover_color="gray30", width=140).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(action_frame, text="📄 Salvar Relatório", command=self.save_report,
+                      fg_color="gray40", hover_color="gray30", width=140).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(action_frame, text="✓ Fechar", command=self.window.destroy,
+                      fg_color=ACCENT, hover_color="#0088AA", width=120,
+                      font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=5)
     
     def open_drive(self, drive_url):
         """Abre pasta no explorador"""
@@ -1004,112 +907,50 @@ def find_column(df, names):
 
 
 class App:
+    ACCENT = "#00A8CC"
+    ACCENT_HOVER = "#0088AA"
+
     def __init__(self, root):
         self.root = root
         self.root.title("PD7Lab - Extrator de Comprovantes PDF v1.0.0")
-        self.root.geometry("950x750")
-        self.root.minsize(850, 650)
-        
-        # Tentar definir ícone da janela
+        self.root.geometry("950x780")
+        self.root.minsize(850, 680)
+
         try:
             icon_path = resource_path("pd7-escudo.ico")
             if os.path.exists(icon_path):
                 self.root.iconbitmap(icon_path)
-            else:
-                # Tentar com PNG se ICO não existir
-                icon_png = resource_path("pd7-escudo.ico")
-                if os.path.exists(icon_png):
-                    icon_image = Image.open(icon_png)
-                    icon_photo = ImageTk.PhotoImage(icon_image)
-                    self.root.iconphoto(True, icon_photo)
-        except Exception as e:
-            # Continuar mesmo se não conseguir carregar o ícone
+        except Exception:
             pass
-        
-        # PD7Lab Color Palette (from logo)
-        self.colors = {
-            'primary_blue': '#00D4FF',      # Cyan blue from logo
-            'dark_blue': '#0099CC',         # Darker shade
-            'accent_blue': '#0AEAFF',       # Lighter cyan
-            'white': '#F8F8F8',             # Off-white (slightly darker)
-            'light_gray': '#F5F5F5',
-            'medium_gray': '#E0E0E0',
-            'dark_gray': '#424242',
-            'text_dark': '#212121',
-            'success': '#4CAF50',
-            'warning': '#FF9800',
-            'error': '#F44336'
-        }
-        
-        # Set window background
-        self.root.configure(bg=self.colors['white'])
-        
+
         self.pdf_folder_var = tk.StringVar()
         self.excel_var = tk.StringVar()
         self.out_var = tk.StringVar(value="comprovantes_extraidos")
         self.df = None
         self.conta_col = None
-        self.agencia_col = None  # Nova coluna de agência
+        self.agencia_col = None
         self.nome_col = None
         self.ccusto_col = None
         self.last_dir = os.path.expanduser("~")
-        
-        # Option to force reprocess (ignore history)
+
         self.force_reprocess_var = tk.BooleanVar(value=False)
-        
-        # Debug mode - mostra detalhes de busca
         self.debug_mode_var = tk.BooleanVar(value=False)
-        
-        # Timer
+
         self.start_time = None
         self.timer_running = False
         self.timer_label = None
-        
-        # Logo image
+
         self.logo_image = None
         self.logo_label = None
-        
-        # Theme management
-        self.current_theme = 'light'  # 'light' or 'dark'
-        self.themes = {
-            'light': {
-                'primary_blue': '#00A8CC',      # Azul mais suave
-                'dark_blue': '#008299',         # Tom mais profundo
-                'accent_blue': '#00C4E6',       # Azul claro mais suave
-                'white': '#F5F5F5',             # Cinza muito claro (não branco puro)
-                'light_gray': '#E8E8E8',        # Cinza claro suave
-                'medium_gray': '#CCCCCC',       # Cinza médio suave
-                'dark_gray': '#5A5A5A',         # Cinza escuro mais suave
-                'text_dark': '#303030',         # Texto cinza escuro (não preto puro)
-                'success': '#43A047',           # Verde mais suave
-                'warning': '#FB8C00',           # Laranja mais suave
-                'error': '#E53935',             # Vermelho mais suave
-                'logo_file': 'pd7lab-dark.jpeg'
-            },
-            'dark': {
-                'primary_blue': '#00D4FF',
-                'dark_blue': '#0099CC',
-                'accent_blue': '#0AEAFF',
-                'white': '#2B2B2B',          # Cinza escuro suave (não preto puro)
-                'light_gray': '#363636',     # Cinza médio-escuro
-                'medium_gray': '#4A4A4A',    # Cinza médio
-                'dark_gray': '#9E9E9E',      # Cinza claro suave (não muito brilhante)
-                'text_dark': '#D0D0D0',      # Texto cinza claro (não branco puro)
-                'success': '#66BB6A',        # Verde mais suave
-                'warning': '#FFA726',        # Laranja mais suave
-                'error': '#EF5350',          # Vermelho mais suave
-                'logo_file': 'pd7.png'
-            }
-        }
-        
-        # Histórico de PDFs processados
+
+        self.current_theme = 'light'
+
         self.processed_pdfs_file = "pdfs_processados.json"
         self.processed_pdfs = self.load_processed_pdfs()
-        
-        # Controle de último processamento (para upload)
+
         self.last_output_folder = None
         self.last_process_stats = None
-        
+
         self.setup_ui()
     
     def load_processed_pdfs(self):
@@ -1140,277 +981,136 @@ class App:
     
     def toggle_theme(self):
         """Alterna entre tema claro e escuro"""
-        # Alternar tema
         self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
-        
-        # Aplicar cores do novo tema
-        theme_colors = self.themes[self.current_theme]
-        self.colors = theme_colors.copy()
-        
-        # Recriar a UI com o novo tema
-        # Limpar widgets existentes
-        for widget in self.root.winfo_children():
-            widget.destroy()
-        
-        # Reconfigurar background da janela
-        self.root.configure(bg=self.colors['white'])
-        
-        # Recriar UI
-        self.setup_ui()
-        
-        # Log da mudança
+        ctk.set_appearance_mode('dark' if self.current_theme == 'dark' else 'light')
+        icon = "☀️ Modo Claro" if self.current_theme == 'dark' else "🌙 Modo Escuro"
+        try:
+            self.theme_btn.configure(text=icon)
+        except Exception:
+            pass
         theme_name = 'Escuro' if self.current_theme == 'dark' else 'Claro'
         self.write_log(f"🎨 Tema alterado para: {theme_name}")
     
     def setup_ui(self):
-        # Apply PD7Lab themed style
-        try:
-            style = ttk.Style(self.root)
-            # Use clam theme as base for better customization
-            try:
-                style.theme_use("clam")
-            except:
-                pass
-            
-            # Configure colors based on PD7Lab palette
-            style.configure('TLabel', 
-                          font=('Segoe UI', 10), 
-                          background=self.colors['white'],
-                          foreground=self.colors['text_dark'])
-            
-            style.configure('TButton', 
-                          font=('Segoe UI', 10),
-                          borderwidth=1,
-                          relief='flat',
-                          background=self.colors['medium_gray'],
-                          foreground=self.colors['text_dark'])
-            style.map('TButton', 
-                     background=[('active', self.colors['primary_blue']),
-                               ('pressed', self.colors['dark_blue'])],
-                     foreground=[('active', self.colors['white'])])
-            
-            # Header style with PD7Lab blue
-            style.configure('Header.TLabel', 
-                          font=('Segoe UI', 18, 'bold'),
-                          background=self.colors['white'],
-                          foreground=self.colors['primary_blue'])
-            
-            # Accent button with PD7Lab colors
-            style.configure('Accent.TButton', 
-                          font=('Segoe UI', 11, 'bold'),
-                          borderwidth=0,
-                          relief='flat',
-                          background=self.colors['primary_blue'],
-                          foreground=self.colors['white'],
-                          padding=(20, 10))
-            style.map('Accent.TButton', 
-                     background=[('active', self.colors['accent_blue']),
-                               ('pressed', self.colors['dark_blue'])],
-                     foreground=[('active', self.colors['white']),
-                               ('pressed', self.colors['white'])])
-            
-            # Frame styles
-            style.configure('TFrame', background=self.colors['white'])
-            style.configure('TLabelframe', 
-                          background=self.colors['white'],
-                          foreground=self.colors['dark_gray'],
-                          borderwidth=2,
-                          relief='groove')
-            style.configure('TLabelframe.Label', 
-                          font=('Segoe UI', 10, 'bold'),
-                          background=self.colors['white'],
-                          foreground=self.colors['primary_blue'])
-            
-            # Entry style
-            style.configure('TEntry',
-                          fieldbackground=self.colors['white'],
-                          foreground=self.colors['text_dark'],
-                          borderwidth=1)
-            
-            # Checkbutton style
-            style.configure('TCheckbutton',
-                          background=self.colors['white'],
-                          foreground=self.colors['text_dark'])
-            
-            # Progressbar with PD7Lab blue
-            style.configure('TProgressbar',
-                          troughcolor=self.colors['medium_gray'],
-                          background=self.colors['primary_blue'],
-                          borderwidth=0,
-                          thickness=20)
-            
-        except Exception as e:
-            # Fallback if styling fails
-            print(f"Style warning: {e}")
-            pass
+        ACCENT = self.ACCENT
+        HOVER = self.ACCENT_HOVER
 
-        # Main container with white background
-        main = ttk.Frame(self.root, padding=(15, 15))
-        main.pack(fill=tk.BOTH, expand=True)
+        # Container principal
+        main = ctk.CTkFrame(self.root, fg_color="transparent")
+        main.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
 
-        # Header with logo
-        header_frame = ttk.Frame(main)
-        header_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        # Try to load and display logo
+        # Header
+        header_frame = ctk.CTkFrame(main, fg_color="transparent")
+        header_frame.pack(fill=tk.X, pady=(0, 12))
+
         try:
             if Image and ImageTk:
-                logo_filename = self.themes[self.current_theme]['logo_file']
-                logo_path = resource_path(logo_filename)  # Usar resource_path()
+                logo_file = 'pd7lab-dark.jpeg' if self.current_theme == 'light' else 'pd7.png'
+                logo_path = resource_path(logo_file)
                 if os.path.exists(logo_path):
                     logo_img = Image.open(logo_path)
-                    # Resize logo to fit header (height ~60px)
-                    aspect_ratio = logo_img.width / logo_img.height
                     new_height = 60
-                    new_width = int(new_height * aspect_ratio)
+                    new_width = int(new_height * logo_img.width / logo_img.height)
                     logo_img = logo_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     self.logo_image = ImageTk.PhotoImage(logo_img)
-                    
-                    self.logo_label = ttk.Label(header_frame, image=self.logo_image, background=self.colors['white'])
+                    self.logo_label = ctk.CTkLabel(header_frame, image=self.logo_image, text="")
                     self.logo_label.pack(side=tk.LEFT, padx=(0, 15))
-                else:
-                    # Se logo não encontrada, apenas registrar no log (não quebrar a aplicação)
-                    print(f"Logo não encontrada: {logo_path}")
         except Exception as e:
             print(f"Logo loading warning: {e}")
-            pass
-        
-        # Header text
-        header_text_frame = ttk.Frame(header_frame)
-        header_text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        header = ttk.Label(header_text_frame, text="Extrator de Comprovantes PDF v1.0.0", style='Header.TLabel')
-        header.pack(anchor=tk.W)
-        
-        subtitle = ttk.Label(header_text_frame, 
-                           text="Automatize a extração de comprovantes bancários", 
-                           font=('Segoe UI', 9, 'italic'),
-                           foreground=self.colors['dark_gray'])
-        subtitle.pack(anchor=tk.W)
-        
-        # Theme toggle button on the right side of header
-        theme_btn_frame = ttk.Frame(header_frame)
-        theme_btn_frame.pack(side=tk.RIGHT, padx=(10, 0))
-        
-        theme_icon = "🌙" if self.current_theme == 'light' else "☀️"
-        theme_text = "Modo Escuro" if self.current_theme == 'light' else "Modo Claro"
-        
-        self.theme_btn = ttk.Button(theme_btn_frame, 
-                                    text=f"{theme_icon} {theme_text}", 
-                                    command=self.toggle_theme,
-                                    width=15)
-        self.theme_btn.pack()
-        
-        # Separator line
-        separator = tk.Frame(main, height=2, bg=self.colors['primary_blue'])
-        separator.pack(fill=tk.X, pady=(0, 15))
-        
-        # Files section with custom styling
-        files = ttk.LabelFrame(main, text="📁 Arquivos", padding=15)
-        files.pack(fill=tk.X, pady=(0, 10))
 
-        # Layout: label | entry | button
-        files.columnconfigure(1, weight=1)
+        header_text = ctk.CTkFrame(header_frame, fg_color="transparent")
+        header_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ctk.CTkLabel(header_text, text="Extrator de Comprovantes PDF v1.0.0",
+                     font=("Segoe UI", 18, "bold"), text_color=ACCENT).pack(anchor=tk.W)
+        ctk.CTkLabel(header_text, text="Automatize a extração de comprovantes bancários",
+                     font=("Segoe UI", 9), text_color="gray").pack(anchor=tk.W)
 
-        ttk.Label(files, text="Pasta PDFs:").grid(row=0, column=0, sticky=tk.W, padx=(4, 12), pady=8)
-        pdf_entry = ttk.Entry(files, textvariable=self.pdf_folder_var, font=('Segoe UI', 10))
-        pdf_entry.grid(row=0, column=1, sticky='ew', padx=(0, 10), pady=8, ipady=4)
-        pdf_entry.bind('<Return>', lambda e: self.validate_pdf_folder())
-        ttk.Button(files, text="Procurar...", width=14, command=self.get_pdf_folder).grid(row=0, column=2, padx=(0,4), pady=8)
+        theme_icon = "🌙 Modo Escuro" if self.current_theme == 'light' else "☀️ Modo Claro"
+        self.theme_btn = ctk.CTkButton(header_frame, text=theme_icon, command=self.toggle_theme,
+                                        width=140, fg_color="gray40", hover_color="gray30")
+        self.theme_btn.pack(side=tk.RIGHT)
 
-        ttk.Label(files, text="Planilha Excel:").grid(row=1, column=0, sticky=tk.W, padx=(4, 12), pady=8)
-        excel_entry = ttk.Entry(files, textvariable=self.excel_var, font=('Segoe UI', 10))
-        excel_entry.grid(row=1, column=1, sticky='ew', padx=(0, 10), pady=8, ipady=4)
-        excel_entry.bind('<Return>', lambda e: self.validate_excel())
-        ttk.Button(files, text="Procurar...", width=14, command=self.get_excel).grid(row=1, column=2, padx=(0,4), pady=8)
+        # Separador
+        ctk.CTkFrame(main, height=2, fg_color=ACCENT).pack(fill=tk.X, pady=(0, 12))
 
-        ttk.Label(files, text="Pasta de Saída:").grid(row=2, column=0, sticky=tk.W, padx=(4, 12), pady=8)
-        out_entry = ttk.Entry(files, textvariable=self.out_var, font=('Segoe UI', 10))
-        out_entry.grid(row=2, column=1, sticky='ew', padx=(0, 10), pady=8, ipady=4)
-        out_entry.bind('<Return>', lambda e: self.validate_out())
-        ttk.Button(files, text="Procurar...", width=14, command=self.get_out).grid(row=2, column=2, padx=(0,4), pady=8)
+        # Arquivos
+        files_frame = ctk.CTkFrame(main, corner_radius=10)
+        files_frame.pack(fill=tk.X, pady=(0, 8))
+        ctk.CTkLabel(files_frame, text="📁 Arquivos",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 4))
 
-        # Status / timer row with colored background
-        status_row = tk.Frame(main, bg=self.colors['light_gray'], relief='flat', bd=0)
-        status_row.pack(fill=tk.X, pady=(10, 8))
-        
-        status_inner = tk.Frame(status_row, bg=self.colors['light_gray'])
-        status_inner.pack(fill=tk.X, padx=10, pady=8)
-        
-        self.timer_label = tk.Label(status_inner, 
-                                    text="⏱️ Tempo: 00:00:00.000",
-                                    font=('Segoe UI', 10, 'bold'),
-                                    bg=self.colors['light_gray'],
-                                    fg=self.colors['primary_blue'])
-        self.timer_label.pack(side=tk.LEFT)
+        grid = ctk.CTkFrame(files_frame, fg_color="transparent")
+        grid.pack(fill=tk.X, padx=15, pady=(0, 10))
+        grid.columnconfigure(1, weight=1)
 
-        # Options frame for reprocess controls
-        options_frame = ttk.LabelFrame(main, text="⚙️ Opções de Processamento", padding=12)
-        options_frame.pack(fill=tk.X, pady=(8, 10))
-        
+        for row, (label, var, cmd, val_cmd) in enumerate([
+            ("Pasta PDFs:",    self.pdf_folder_var, self.get_pdf_folder, self.validate_pdf_folder),
+            ("Planilha Excel:", self.excel_var,       self.get_excel,      self.validate_excel),
+            ("Pasta de Saída:", self.out_var,          self.get_out,        self.validate_out),
+        ]):
+            ctk.CTkLabel(grid, text=label).grid(row=row, column=0, sticky=tk.W, padx=(0, 12), pady=5)
+            entry = ctk.CTkEntry(grid, textvariable=var, font=("Segoe UI", 10))
+            entry.grid(row=row, column=1, sticky='ew', padx=(0, 10), pady=5)
+            entry.bind('<Return>', lambda e, v=val_cmd: v())
+            ctk.CTkButton(grid, text="Procurar...", width=110, command=cmd,
+                          fg_color=ACCENT, hover_color=HOVER).grid(row=row, column=2, pady=5)
+
+        # Timer
+        timer_row = ctk.CTkFrame(main, corner_radius=8)
+        timer_row.pack(fill=tk.X, pady=(8, 6))
+        self.timer_label = ctk.CTkLabel(timer_row, text="⏱️ Tempo: 00:00:00.000",
+                                         font=("Segoe UI", 10, "bold"), text_color=ACCENT)
+        self.timer_label.pack(side=tk.LEFT, padx=15, pady=8)
+
+        # Opções
+        opts_frame = ctk.CTkFrame(main, corner_radius=10)
+        opts_frame.pack(fill=tk.X, pady=(6, 8))
+        ctk.CTkLabel(opts_frame, text="⚙️ Opções de Processamento",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 4))
+        opts_inner = ctk.CTkFrame(opts_frame, fg_color="transparent")
+        opts_inner.pack(fill=tk.X, padx=15, pady=(0, 10))
         try:
-            chk = ttk.Checkbutton(options_frame, text="Ignorar histórico (forçar reprocessamento)", 
-                                 variable=self.force_reprocess_var)
-            chk.pack(side=tk.LEFT, padx=(4, 12))
-            
-            chk_debug = ttk.Checkbutton(options_frame, text="🔧 Debug", 
-                                       variable=self.debug_mode_var)
-            chk_debug.pack(side=tk.LEFT, padx=(0, 12))
-            
-            ttk.Button(options_frame, text="🗑️ Limpar Histórico", 
-                      command=self.clear_processed_history, width=18).pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Button(options_frame, text="🔍 Buscar Não Encontrados", 
-                      command=self.search_missing, width=24).pack(side=tk.LEFT, padx=(6, 4))
+            ctk.CTkCheckBox(opts_inner, text="Ignorar histórico (forçar reprocessamento)",
+                            variable=self.force_reprocess_var).pack(side=tk.LEFT, padx=(0, 15))
+            ctk.CTkCheckBox(opts_inner, text="🔧 Debug",
+                            variable=self.debug_mode_var).pack(side=tk.LEFT, padx=(0, 15))
+            ctk.CTkButton(opts_inner, text="🗑️ Limpar Histórico",
+                          command=self.clear_processed_history, width=150,
+                          fg_color="gray40", hover_color="gray30").pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkButton(opts_inner, text="🔍 Buscar Não Encontrados",
+                          command=self.search_missing, width=200,
+                          fg_color=ACCENT, hover_color=HOVER).pack(side=tk.LEFT)
         except Exception:
-            # ignore if style/ttk not available
             pass
 
-        # Process button and progress with enhanced styling
-        controls = ttk.Frame(main)
-        controls.pack(fill=tk.X, pady=(12, 8))
-        
-        # Salvar referência ao frame de controles para adicionar botão de upload depois
+        # Controles (botão processar + barra de progresso)
+        controls = ctk.CTkFrame(main, fg_color="transparent")
+        controls.pack(fill=tk.X, pady=(10, 6))
         self.controls_frame = controls
-        
-        # Main action button with PD7Lab styling
-        self.btn = ttk.Button(controls, text="▶ PROCESSAR COMPROVANTES", 
-                             command=self.start, style='Accent.TButton')
+
+        self.btn = ctk.CTkButton(controls, text="▶  PROCESSAR COMPROVANTES",
+                                  command=self.start, fg_color=ACCENT, hover_color=HOVER,
+                                  font=("Segoe UI", 11, "bold"), height=42, corner_radius=8)
         self.btn.pack(side=tk.LEFT, padx=(0, 15))
 
-        self.prog = ttk.Progressbar(controls, mode='indeterminate', length=400)
+        self.prog = ctk.CTkProgressBar(controls, mode='indeterminate', height=20)
         self.prog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 15))
+        self.prog.set(0)
 
-        # Status label to the right
         self.status_var = tk.StringVar(value="Pronto")
-        status_label = ttk.Label(controls, 
-                                textvariable=self.status_var, 
-                                font=('Segoe UI', 9, 'italic'),
-                                foreground=self.colors['dark_gray'])
-        status_label.pack(side=tk.LEFT)
+        self.status_label = ctk.CTkLabel(controls, text="Pronto",
+                                          font=("Segoe UI", 9), text_color="gray")
+        self.status_label.pack(side=tk.LEFT)
+        self.status_var.trace_add('write', lambda *_: self.status_label.configure(text=self.status_var.get()))
 
-        # Log area with styled frame
-        logf = ttk.LabelFrame(main, text="📋 Log de Processamento", padding=10)
-        logf.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        
-        # Create text widget with custom colors
-        self.log = scrolledtext.ScrolledText(logf, 
-                                            height=12, 
-                                            state='disabled', 
-                                            font=('Consolas', 9),
-                                            bg=self.colors['white'],
-                                            fg=self.colors['text_dark'],
-                                            relief='flat',
-                                            borderwidth=1,
-                                            highlightthickness=1,
-                                            highlightbackground=self.colors['medium_gray'],
-                                            wrap=tk.WORD)
-        self.log.pack(fill=tk.BOTH, expand=True)
-        
-        # Configure text tags for colored log messages
-        self.log.tag_config('success', foreground=self.colors['success'], font=('Consolas', 9, 'bold'))
-        self.log.tag_config('error', foreground=self.colors['error'], font=('Consolas', 9, 'bold'))
-        self.log.tag_config('warning', foreground=self.colors['warning'], font=('Consolas', 9, 'bold'))
-        self.log.tag_config('info', foreground=self.colors['primary_blue'], font=('Consolas', 9, 'bold'))
+        # Log
+        log_frame = ctk.CTkFrame(main, corner_radius=10)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        ctk.CTkLabel(log_frame, text="📋 Log de Processamento",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=15, pady=(10, 4))
+        self.log = ctk.CTkTextbox(log_frame, font=("Consolas", 9), state='disabled',
+                                   wrap='word', border_width=1)
+        self.log.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
     
     def update_timer(self):
         """Atualiza o cronômetro a cada 100ms"""
@@ -1420,14 +1120,14 @@ class App:
             minutes, seconds = divmod(remainder, 60)
             milliseconds = int((elapsed % 1) * 1000)
             time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
-            self.timer_label.config(text=f"⏱️ Tempo: {time_str}")
+            self.timer_label.configure(text=f"⏱️ Tempo: {time_str}")
             self.root.after(100, self.update_timer)
     
     def start_timer(self):
         """Inicia o cronômetro"""
         self.start_time = time.time()
         self.timer_running = True
-        self.timer_label.config(text="⏱️ Tempo: 00:00:00.000")
+        self.timer_label.configure(text="⏱️ Tempo: 00:00:00.000")
         self.update_timer()
     
     def stop_timer(self):
@@ -1537,31 +1237,112 @@ class App:
     
     def load_excel(self, path):
         try:
-            # Primeira leitura para detectar colunas
-            self.df = pd.read_excel(path)
-            cols = list(self.df.columns)
-            
-            # Auto-detectar colunas (hardcoded)
-            self.conta_col = find_column(self.df, ['conta', 'account', 'conta corrente'])
-            self.agencia_col = find_column(self.df, ['agencia', 'agência', 'ag', 'agency'])
-            self.nome_col = find_column(self.df, ['nome social', 'nome', 'funcionario'])
-            self.ccusto_col = find_column(self.df, ['descrição ccusto', 'descricao ccusto', 'descrição de ccusto', 'descricao de ccusto', 'desc ccusto', 'ccusto', 'centro de custo', 'setor'])
-            
-            # Reler o Excel forçando conta e agência como TEXTO para preservar zeros à esquerda
-            dtype_dict = {}
-            if self.conta_col:
-                dtype_dict[self.conta_col] = str
-            if self.agencia_col:
-                dtype_dict[self.agencia_col] = str
-            
-            if dtype_dict:
-                self.df = pd.read_excel(path, dtype=dtype_dict)
-                self.write_log(f"ℹ️ Colunas Conta/Agência lidas como TEXTO (preserva zeros à esquerda)")
-            
-            self.write_log(f"Colunas: {len(cols)} | Registros: {len(self.df)}")
-            self.write_log(f"✓ Detectadas: Conta={self.conta_col}, Agência={self.agencia_col}, Nome={self.nome_col}, CCusto={self.ccusto_col}")
+            xl = pd.ExcelFile(path)
+            sheet_names = xl.sheet_names
+            all_rows = []
+            sheets_loaded = 0
+
+            def _has_data(val):
+                """Retorna True se o valor tem conteúdo real (não vazio/nan/traço)."""
+                if val is None:
+                    return False
+                s = str(val).strip()
+                return s not in ('', '-', 'nan', 'NaN', 'None', 'NaT', 'nat')
+
+            for sheet in sheet_names:
+                # Leitura inicial para detectar nomes das colunas
+                df_sheet = pd.read_excel(path, sheet_name=sheet)
+                if df_sheet.empty:
+                    continue
+
+                nome_col = find_column(df_sheet, ['nome social', 'nome', 'funcionario'])
+                if not nome_col:
+                    continue
+
+                agencia_col  = find_column(df_sheet, ['agencia', 'agência', 'ag', 'agency'])
+                conta_col    = find_column(df_sheet, ['conta', 'account', 'conta corrente'])
+                ccusto_col   = find_column(df_sheet, [
+                    'descrição ccusto', 'descricao ccusto', 'descrição de ccusto',
+                    'descricao de ccusto', 'desc ccusto', 'ccusto', 'centro de custo', 'setor'
+                ])
+
+                # Detectar coluna duplicada Conta.1 (segunda coluna Conta no export do RH)
+                # pandas renomeia automaticamente duplicatas: Conta → Conta, Conta → Conta.1
+                conta1_col = 'Conta.1' if 'Conta.1' in df_sheet.columns else None
+
+                # Reler forçando colunas bancárias como texto (preserva zeros à esquerda)
+                dtype_dict = {c: str for c in [conta_col, agencia_col, conta1_col] if c}
+                df_sheet = pd.read_excel(path, sheet_name=sheet, dtype=dtype_dict)
+
+                sheet_ccusto = sheet.strip()
+                rows_in_sheet = 0
+
+                for _, row in df_sheet.iterrows():
+                    nome_val = row.get(nome_col)
+                    if pd.isna(nome_val) or str(nome_val).strip() == '':
+                        continue
+
+                    # ── Lógica de banco (dois formatos coexistem na planilha) ──────────
+                    # Formato A: coluna Agencia preenchida  → Agencia=agência, Conta=conta
+                    # Formato B: coluna Agencia vazia       → Conta=agência,  Conta.1=conta
+                    agencia_raw = str(row.get(agencia_col, '')) if agencia_col else ''
+                    conta_raw   = str(row.get(conta_col, ''))   if conta_col   else ''
+                    conta1_raw  = str(row.get(conta1_col, ''))  if conta1_col  else ''
+
+                    if _has_data(agencia_raw):
+                        agencia_val = agencia_raw.strip()
+                        conta_val   = conta_raw.strip()
+                    elif _has_data(conta1_raw):
+                        # Conta.1 presente → Conta guarda agência, Conta.1 guarda a conta
+                        agencia_val = conta_raw.strip()
+                        conta_val   = conta1_raw.strip()
+                    else:
+                        agencia_val = ''
+                        conta_val   = conta_raw.strip()
+
+                    # ── Centro de custo ───────────────────────────────────────────────
+                    if ccusto_col and _has_data(row.get(ccusto_col)):
+                        ccusto_val = str(row[ccusto_col]).strip()
+                    else:
+                        ccusto_val = sheet_ccusto  # nome da aba como fallback
+
+                    all_rows.append({
+                        '_nome':    str(nome_val).strip(),
+                        '_agencia': agencia_val,
+                        '_conta':   conta_val,
+                        '_ccusto':  ccusto_val or sheet_ccusto,
+                    })
+                    rows_in_sheet += 1
+
+                if rows_in_sheet > 0:
+                    self.write_log(f"  ✓ Aba '{sheet}': {rows_in_sheet} registros")
+                    sheets_loaded += 1
+
+            if not all_rows:
+                self.write_log("⚠️ Nenhum registro válido encontrado na planilha!")
+                return
+
+            self.df = pd.DataFrame(all_rows)
+            self.conta_col   = '_conta'
+            self.agencia_col = '_agencia'
+            self.nome_col    = '_nome'
+            self.ccusto_col  = '_ccusto'
+
+            # Estatísticas de centros de custo detectados
+            ccusto_counts = self.df['_ccusto'].value_counts()
+            sem_banco = (self.df['_conta'].str.strip() == '').sum()
+
+            self.write_log(f"\nAbas carregadas: {sheets_loaded} | Total de registros: {len(self.df)}")
+            self.write_log(f"  📊 Centros de custo (CCusto): {len(ccusto_counts)} únicos")
+            for ccusto_name, count in ccusto_counts.items():
+                self.write_log(f"     • {ccusto_name}: {count} funcionários")
+            if sem_banco:
+                self.write_log(f"  ⚠️ {sem_banco} registros sem dados bancários (serão ignorados)")
+            self.write_log(f"✓ Colunas mapeadas: Nome, Agência+Conta (duplo formato), Descrição Ccusto")
         except Exception as e:
-            self.write_log(f"Erro: {e}")
+            self.write_log(f"Erro ao carregar planilha: {e}")
+            import traceback
+            self.write_log(traceback.format_exc())
     
     def get_out(self):
         """Seleciona pasta de saída usando explorador nativo do SO"""
@@ -1623,13 +1404,12 @@ class App:
     
     def write_log(self, msg):
         try:
-            self.log.config(state='normal')
-            self.log.insert(tk.END, msg + "\n")
-            self.log.see(tk.END)
-            self.log.config(state='disabled')
+            self.log.configure(state='normal')
+            self.log.insert("end", msg + "\n")
+            self.log._textbox.see("end")
+            self.log.configure(state='disabled')
             self.root.update()
         except Exception:
-            # Fallback se a janela não estiver disponível
             print(msg)
 
     def clear_processed_history(self):
@@ -1868,73 +1648,68 @@ class App:
     
     def open_search_window(self, missing_items):
         """Abre janela interativa para buscar e confirmar comprovantes"""
-        search_win = tk.Toplevel(self.root)
-        search_win.title("🔍 Busca Assistida - Comprovantes Não Encontrados")
-        search_win.geometry("1000x700")
-        
-        # Frame principal
-        main_frame = ttk.Frame(search_win, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Header
-        header = ttk.Label(main_frame, text="Busca Assistida de Comprovantes", 
-                          font=('Segoe UI', 14, 'bold'))
-        header.pack(pady=(0, 10))
-        
-        # Info
-        info_text = f"Total de comprovantes não encontrados: {len(missing_items)}\n"
-        info_text += "Selecione um item e clique em 'Buscar' para procurar nos PDFs com critérios flexíveis."
-        info_label = ttk.Label(main_frame, text=info_text, font=('Segoe UI', 9))
-        info_label.pack(pady=(0, 10))
-        
-        # Frame para lista e detalhes
-        content_frame = ttk.Frame(main_frame)
+        ACCENT = self.ACCENT
+        search_win = ctk.CTkToplevel(self.root)
+        search_win.title("Busca Assistida - Comprovantes Não Encontrados")
+        search_win.geometry("1050x720")
+        search_win.transient(self.root)
+
+        main_frame = ctk.CTkFrame(search_win, fg_color="transparent")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        ctk.CTkLabel(main_frame, text="Busca Assistida de Comprovantes",
+                     font=("Segoe UI", 14, "bold"), text_color=ACCENT).pack(pady=(0, 6))
+
+        info_text = (f"Total de comprovantes não encontrados: {len(missing_items)}\n"
+                     "Selecione um item e clique em 'Buscar' para procurar nos PDFs com critérios flexíveis.")
+        ctk.CTkLabel(main_frame, text=info_text, font=("Segoe UI", 9)).pack(pady=(0, 10))
+
+        content_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Lista de não encontrados (esquerda)
-        list_frame = ttk.LabelFrame(content_frame, text="📋 Não Encontrados", padding=5)
-        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        
-        # Treeview para lista
+
+        # Lista (esquerda)
+        list_frame = ctk.CTkFrame(content_frame, corner_radius=8)
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        ctk.CTkLabel(list_frame, text="📋 Não Encontrados",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=10, pady=(8, 4))
+
+        tree_container = ctk.CTkFrame(list_frame, fg_color="transparent")
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
         columns = ('conta', 'nome', 'ccusto')
-        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+        tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=18)
         tree.heading('conta', text='Conta')
         tree.heading('nome', text='Nome')
         tree.heading('ccusto', text='Centro de Custo')
         tree.column('conta', width=100)
         tree.column('nome', width=250)
         tree.column('ccusto', width=150)
-        
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+        scrollbar = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # Adicionar itens
+
         for item in missing_items:
-            tree.insert('', tk.END, values=(
-                item.get('conta', ''),
-                item.get('nome', ''),
-                item.get('ccusto', '')
-            ))
-        
-        # Frame de resultados (direita)
-        results_frame = ttk.LabelFrame(content_frame, text="🔍 Resultados da Busca", padding=5)
+            tree.insert('', tk.END, values=(item.get('conta', ''), item.get('nome', ''), item.get('ccusto', '')))
+
+        # Resultados (direita)
+        results_frame = ctk.CTkFrame(content_frame, corner_radius=8)
         results_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Texto para resultados
-        results_text = scrolledtext.ScrolledText(results_frame, height=20, width=50, 
-                                                 font=('Courier New', 9), state='disabled')
-        results_text.pack(fill=tk.BOTH, expand=True)
-        
-        # Frame de botões
-        button_frame = ttk.Frame(main_frame)
+        ctk.CTkLabel(results_frame, text="🔍 Resultados da Busca",
+                     font=("Segoe UI", 10, "bold"), text_color=ACCENT).pack(anchor=tk.W, padx=10, pady=(8, 4))
+
+        results_text = ctk.CTkTextbox(results_frame, font=("Courier New", 9), state='disabled')
+        results_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        # Botões
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         button_frame.pack(fill=tk.X, pady=(10, 0))
-        
+
         status_var = tk.StringVar(value="Selecione um item e clique em Buscar")
-        status_label = ttk.Label(button_frame, textvariable=status_var, font=('Segoe UI', 9, 'italic'))
-        status_label.pack(side=tk.LEFT, padx=(0, 10))
+        status_lbl = ctk.CTkLabel(button_frame, text="Selecione um item e clique em Buscar",
+                                   font=("Segoe UI", 9), text_color="gray")
+        status_lbl.pack(side=tk.LEFT, padx=(0, 10))
+        status_var.trace_add('write', lambda *_: status_lbl.configure(text=status_var.get()))
         
         # Variável para armazenar resultados da busca atual
         current_results = {'matches': [], 'selected_item': None}
@@ -1956,14 +1731,14 @@ class App:
 
             # Preparar UI antes de rodar a busca
             status_var.set(f"Buscando: {nome}...")
-            results_text.config(state='normal')
-            results_text.delete(1.0, tk.END)
-            results_text.insert(tk.END, f"Buscando por:\n")
-            results_text.insert(tk.END, f"  Conta: {conta}\n")
-            results_text.insert(tk.END, f"  Nome: {nome}\n")
-            results_text.insert(tk.END, f"  C.Custo: {ccusto}\n")
-            results_text.insert(tk.END, f"\n{'='*50}\n\n")
-            results_text.config(state='disabled')
+            results_text.configure(state='normal')
+            results_text.delete("0.0", "end")
+            results_text.insert("end", f"Buscando por:\n")
+            results_text.insert("end", f"  Conta: {conta}\n")
+            results_text.insert("end", f"  Nome: {nome}\n")
+            results_text.insert("end", f"  C.Custo: {ccusto}\n")
+            results_text.insert("end", f"\n{'='*50}\n\n")
+            results_text.configure(state='disabled')
 
             def worker():
                 try:
@@ -1975,32 +1750,30 @@ class App:
                     err = None
 
                 def finish_ui():
-                    # Atualizar resultados na thread principal
                     current_results['matches'] = matches
-                    results_text.config(state='normal')
-                    results_text.delete(1.0, tk.END)
+                    results_text.configure(state='normal')
+                    results_text.delete("0.0", "end")
                     if err:
-                        results_text.insert(tk.END, f"❌ Erro durante a busca: {err}\n")
+                        results_text.insert("end", f"❌ Erro durante a busca: {err}\n")
                         status_var.set("Erro na busca")
                     elif matches:
-                        results_text.insert(tk.END, f"✓ Encontrados {len(matches)} possíveis matches:\n\n")
+                        results_text.insert("end", f"✓ Encontrados {len(matches)} possíveis matches:\n\n")
                         for i, match in enumerate(matches, 1):
-                            results_text.insert(tk.END, f"{i}. PDF: {match['pdf']}\n")
-                            results_text.insert(tk.END, f"   Página: {match['page'] + 1}\n")
-                            results_text.insert(tk.END, f"   Critério: {match.get('criteria','?')}\n")
-                            results_text.insert(tk.END, f"   Trecho:\n")
-                            results_text.insert(tk.END, f"   {match.get('snippet','')}\n")
-                            results_text.insert(tk.END, f"\n{'-'*50}\n\n")
+                            results_text.insert("end", f"{i}. PDF: {match['pdf']}\n")
+                            results_text.insert("end", f"   Página: {match['page'] + 1}\n")
+                            results_text.insert("end", f"   Critério: {match.get('criteria','?')}\n")
+                            results_text.insert("end", f"   Trecho:\n")
+                            results_text.insert("end", f"   {match.get('snippet','')}\n")
+                            results_text.insert("end", f"\n{'-'*50}\n\n")
                         status_var.set(f"Encontrados {len(matches)} possíveis matches - Revise e confirme")
                     else:
-                        results_text.insert(tk.END, "❌ Nenhum match encontrado mesmo com busca flexível.\n\n")
-                        results_text.insert(tk.END, "Dicas:\n")
-                        results_text.insert(tk.END, "• Verifique se o nome está correto\n")
-                        results_text.insert(tk.END, "• Verifique se a conta está correta\n")
-                        results_text.insert(tk.END, "• Verifique se o comprovante está no PDF\n")
+                        results_text.insert("end", "❌ Nenhum match encontrado mesmo com busca flexível.\n\n")
+                        results_text.insert("end", "Dicas:\n")
+                        results_text.insert("end", "• Verifique se o nome está correto\n")
+                        results_text.insert("end", "• Verifique se a conta está correta\n")
+                        results_text.insert("end", "• Verifique se o comprovante está no PDF\n")
                         status_var.set("Nenhum match encontrado")
-
-                    results_text.config(state='disabled')
+                    results_text.configure(state='disabled')
 
                 # Agendar atualização da UI
                 self.root.after(0, finish_ui)
@@ -2057,9 +1830,12 @@ class App:
             if success_count > 0:
                 tree.delete(tree.selection())
         
-        ttk.Button(button_frame, text="🔍 Buscar", command=search_selected, width=15).pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Button(button_frame, text="✓ Extrair Selecionados", command=extract_selected, width=20).pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Button(button_frame, text="❌ Fechar", command=search_win.destroy, width=15).pack(side=tk.RIGHT)
+        ctk.CTkButton(button_frame, text="🔍 Buscar", command=search_selected, width=120,
+                      fg_color=ACCENT, hover_color=self.ACCENT_HOVER).pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(button_frame, text="✓ Extrair Selecionados", command=extract_selected, width=180,
+                      fg_color="#43A047", hover_color="#2E7D32").pack(side=tk.RIGHT, padx=(5, 0))
+        ctk.CTkButton(button_frame, text="❌ Fechar", command=search_win.destroy, width=100,
+                      fg_color="gray40", hover_color="gray30").pack(side=tk.RIGHT)
     
     def flexible_search(self, conta, nome, ccusto):
         """Busca flexível nos PDFs com múltiplos critérios relaxados"""
@@ -2567,10 +2343,10 @@ class App:
             messagebox.showerror("Erro", "Carregue Excel!")
             return
         if not self.conta_col or not self.agencia_col or not self.nome_col or not self.ccusto_col:
-            messagebox.showerror("Erro", "Colunas não encontradas no Excel!\nVerifique se existem as colunas: Conta, Agência, Nome e Descrição Ccusto")
+            messagebox.showerror("Erro", "Colunas não encontradas no Excel!\nVerifique se existem as colunas: Conta, Agência e Nome\n(o Centro de Custo é detectado automaticamente pelo nome da aba)")
             return
-        
-        self.btn.config(state='disabled')
+
+        self.btn.configure(state='disabled')
         self.status_var.set("Processando...")
         self.prog.start()
         self.start_timer()
@@ -3033,9 +2809,11 @@ class App:
                             else:
                                 snippet = ' '.join(credited_section.split())[:200] + "..."
                             
+                            nome_pdf = extract_name_from_page(page_data) or 'N/A'
                             nao_encontrados.append({
                                 'pdf': pdf_name,
                                 'pagina': page_num + 1,
+                                'nome': nome_pdf,
                                 'conta': melhor_conta,
                                 'agencia': melhor_agencia,
                                 'conta_normalizada': conta_norm,
@@ -3067,6 +2845,7 @@ class App:
                         for idx, item in enumerate(nao_encontrados, 1):
                             f.write(f"{idx}. PDF: {item['pdf']}\n")
                             f.write(f"   Página: {item['pagina']}\n")
+                            f.write(f"   Nome: {item.get('nome', 'N/A')}\n")
                             f.write(f"   Conta encontrada: {item['conta']}\n")
                             f.write(f"   Agência encontrada: {item.get('agencia', 'N/A')}\n")
                             f.write(f"   Status: Conta ou Agência NÃO cadastrada na planilha\n")
@@ -3150,25 +2929,22 @@ class App:
     
     def finish(self):
         self.prog.stop()
-        self.btn.config(state='normal')
+        self.prog.set(0)
+        self.btn.configure(state='normal')
         self.status_var.set("Pronto")
-        
-        # Se houve processamento com sucesso, mostrar botão para upload ao Google Drive
+
         if self.last_process_stats and self.last_process_stats.get('success'):
-            # Criar mensagem no log
             self.write_log(f"\n💡 Dica: Você pode enviar os comprovantes para o Google Drive")
-            
-            # Adicionar botão de upload (se ainda não existir)
             if not hasattr(self, 'upload_btn'):
-                self.upload_btn = ttk.Button(self.controls_frame,
-                                            text="📤 Enviar para Drive",
-                                            command=self.open_drive_upload_dialog,
-                                            width=20)
-                # Inserir após o botão principal
+                self.upload_btn = ctk.CTkButton(self.controls_frame,
+                                                text="📤 Enviar para Drive",
+                                                command=self.open_drive_upload_dialog,
+                                                fg_color=self.ACCENT, hover_color=self.ACCENT_HOVER,
+                                                width=160)
                 self.upload_btn.pack(after=self.btn, side=tk.LEFT, padx=(0, 15))
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = ctk.CTk()
     App(root)
     root.mainloop()

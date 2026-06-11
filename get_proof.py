@@ -696,91 +696,97 @@ def find_account_pages(conta, agencia, pages):
             pass
         return False
     
-    def buscar_com_valores(val_conta, val_agencia):
-        """Busca páginas com os valores de conta e agência fornecidos"""
+    def buscar_com_valores(val_conta, val_agencia, exigir_ambos=False):
+        """Busca páginas com os valores de conta e agência fornecidos.
+        exigir_ambos=True: conta E agência devem estar presentes (evita falsos positivos).
+        exigir_ambos=False: apenas conta é obrigatória (agência opcional).
+        """
         resultados = []
-        
+
         for num, data in pages.items():
             # Usar dados da seção "Dados da Conta Creditada" (se existir)
             credited_section = data.get('credited_section', '')
-            
+
             # Se não encontrou a seção, pular esta página
             if not credited_section or len(credited_section) < 20:
                 continue
-            
+
             tem_conta = False
             tem_agencia = False
-            
+
             # Verifica se tem a conta NA SEÇÃO CREDITADA (busca exata)
             if val_conta and find_exact_number(val_conta, credited_section):
                 tem_conta = True
-            
+
+            # Busca com zeros à esquerda removidos progressivamente
+            # Ex: "00059567" (planilha) → "059567" (PDF) → mesmo número, padding diferente
+            if not tem_conta and val_conta.startswith('0'):
+                v = val_conta
+                while not tem_conta and v.startswith('0') and len(v) > 4:
+                    v = v[1:]
+                    if find_exact_number(v, credited_section):
+                        tem_conta = True
+
             # Busca alternativa: sem dígito verificador (último recurso)
             if not tem_conta and len(val_conta) > 4:
                 conta_sem_dv = val_conta[:-1]
                 if len(conta_sem_dv) >= 4 and find_exact_number(conta_sem_dv, credited_section):
                     tem_conta = True
-            
+
             # Verifica se tem a agência NA SEÇÃO CREDITADA (busca exata)
             if val_agencia and find_exact_number(val_agencia, credited_section):
                 tem_agencia = True
-            
-            # SÓ adiciona se encontrou AMBOS: conta E agência
-            # Adiciona se encontrou ao menos a conta (agência é opcional)
-            if tem_conta:
-                if num not in resultados:
-                    resultados.append(num)
-        
+
+            if exigir_ambos:
+                match = tem_conta and tem_agencia
+            else:
+                match = tem_conta  # agência opcional na busca principal
+
+            if match and num not in resultados:
+                resultados.append(num)
+
         return resultados
-    
-    # Primeira tentativa: valores originais (conta na coluna conta, agência na coluna agência)
-    found = buscar_com_valores(conta_norm, agencia_norm)
-    
+
+    # Tentativa 1: conta + agência (match estrito — evita falsos positivos entre
+    # funcionários que compartilham o mesmo número de agência)
+    found = buscar_com_valores(conta_norm, agencia_norm, exigir_ambos=True)
     if found:
-        return found, False  # Encontrou com valores originais
-    
-    # Segunda tentativa: valores INVERTIDOS (conta<->agência trocados na planilha)
-    # Só tenta se os valores forem diferentes entre si
+        return found, False
+
+    # Tentativa 2: só conta (agência ausente na seção creditada do PDF)
+    found = buscar_com_valores(conta_norm, agencia_norm, exigir_ambos=False)
+    if found:
+        return found, False
+
+    # Tentativa 3: valores INVERTIDOS com ambos obrigatórios (conta<->agência trocados
+    # na planilha — ex: Formato A vs Formato B na mesma base de dados)
     if conta_norm != agencia_norm:
-        found_invertido = buscar_com_valores(agencia_norm, conta_norm)
+        found_invertido = buscar_com_valores(agencia_norm, conta_norm, exigir_ambos=True)
         if found_invertido:
-            return found_invertido, True  # Encontrou com valores invertidos
+            return found_invertido, True
     
-    # Terceira tentativa: BUSCA TEXTUAL AMPLA (qualquer um dos valores em qualquer lugar)
-    # Para casos onde os dados estão em colunas erradas ou em branco
+    # Terceira tentativa: busca apenas pela conta (sem agência).
+    # Agências são números curtos (4-5 dígitos) que aparecem em muitas páginas,
+    # causando falsos positivos se usados como único critério de match.
     found_ampla = []
     for num, data in pages.items():
         credited_section = data.get('credited_section', '')
-        
+
         if not credited_section or len(credited_section) < 20:
             continue
-        
-        # Buscar QUALQUER UM dos valores (conta OU agência) em QUALQUER LUGAR da seção
-        encontrou_algum = False
-        
-        # Tentar encontrar conta
+
+        encontrou = False
+
         if conta_norm and find_exact_number(conta_norm, credited_section):
-            encontrou_algum = True
-        
-        # Tentar encontrar agência
-        if not encontrou_algum and agencia_norm and find_exact_number(agencia_norm, credited_section):
-            encontrou_algum = True
-        
-        # Busca sem dígito verificador (último recurso)
-        if not encontrou_algum:
-            if len(conta_norm) > 4:
-                conta_sem_dv = conta_norm[:-1]
-                if len(conta_sem_dv) >= 4 and find_exact_number(conta_sem_dv, credited_section):
-                    encontrou_algum = True
-            
-            if not encontrou_algum and len(agencia_norm) > 4:
-                agencia_sem_dv = agencia_norm[:-1]
-                if len(agencia_sem_dv) >= 4 and find_exact_number(agencia_sem_dv, credited_section):
-                    encontrou_algum = True
-        
-        if encontrou_algum and num not in found_ampla:
+            encontrou = True
+        elif len(conta_norm) > 4:
+            conta_sem_dv = conta_norm[:-1]
+            if len(conta_sem_dv) >= 4 and find_exact_number(conta_sem_dv, credited_section):
+                encontrou = True
+
+        if encontrou and num not in found_ampla:
             found_ampla.append(num)
-    
+
     if found_ampla:
         return found_ampla, False  # Encontrou com busca ampla
     
@@ -1263,7 +1269,9 @@ class App:
                 conta_col    = find_column(df_sheet, ['conta', 'account', 'conta corrente'])
                 ccusto_col   = find_column(df_sheet, [
                     'descrição ccusto', 'descricao ccusto', 'descrição de ccusto',
-                    'descricao de ccusto', 'desc ccusto', 'ccusto', 'centro de custo', 'setor'
+                    'descricao de ccusto', 'desc ccusto', 'ccusto', 'centro de custo', 'setor',
+                    'contrato', 'descrição contrato', 'descricao contrato',
+                    'desc contrato', 'projeto', 'cliente',
                 ])
 
                 # Detectar coluna duplicada Conta.1 (segunda coluna Conta no export do RH)
@@ -1273,6 +1281,10 @@ class App:
                 # Reler forçando colunas bancárias como texto (preserva zeros à esquerda)
                 dtype_dict = {c: str for c in [conta_col, agencia_col, conta1_col] if c}
                 df_sheet = pd.read_excel(path, sheet_name=sheet, dtype=dtype_dict)
+
+                # Forward-fill na coluna ccusto para tratar células mescladas no Excel.
+                if ccusto_col and ccusto_col in df_sheet.columns:
+                    df_sheet[ccusto_col] = df_sheet[ccusto_col].ffill()
 
                 sheet_ccusto = sheet.strip()
                 rows_in_sheet = 0
